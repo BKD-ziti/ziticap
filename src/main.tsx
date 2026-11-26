@@ -7,6 +7,7 @@ import { loadSettings, saveSettings } from './lib/db';
 import { takeCrashedInflight } from './lib/device';
 import { LOCAL_MODELS } from './lib/transcribe';
 import { toastStore } from './lib/session';
+import { preferSafeAudio } from './lib/audio';
 
 // Load custom vocabulary (e.g. BKDziti) before anything renders captions.
 const settings = loadSettings();
@@ -15,7 +16,12 @@ const settings = loadSettings();
 // Step down to something lighter so the same crash doesn't happen again, and say why.
 let notice = '';
 const crashed = takeCrashedInflight();
-if (crashed?.kind === 'asr') {
+if (crashed?.kind === 'audio') {
+  preferSafeAudio(true);
+  notice = 'Your device ran out of memory while reading this video’s audio. ZitiCap will now use its low-memory method — open the project and try again.';
+} else if (crashed?.kind === 'asr' && crashed.stage === 'transcribe') {
+  notice = 'Your device ran out of memory while transcribing. Close other apps and try again, or use Groq in Settings (it needs almost no phone memory).';
+} else if (crashed?.kind === 'asr') {
   const ids = LOCAL_MODELS.map((m) => m.id);
   const i = ids.indexOf(String(crashed.model));
   if (i > 0) {

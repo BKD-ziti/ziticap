@@ -166,10 +166,63 @@ export function SettingsSheet({ onClose }: { onClose: () => void }) {
           </select>
         </label>
 
+        <Diagnostics />
+
         <button class="btn primary big block" onClick={save}>
           Save
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Device facts and the last crash, for troubleshooting. Nothing is sent anywhere. */
+function Diagnostics() {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  if (!open)
+    return (
+      <button class="btn small ghost" style={{ justifySelf: 'start' }} onClick={() => setOpen(true)}>
+        Diagnostics
+      </button>
+    );
+  const nav = navigator as Navigator & { gpu?: unknown; deviceMemory?: number };
+  let lastCrash = '';
+  try {
+    lastCrash = localStorage.getItem('ziticap:lastcrash') ?? '';
+  } catch {
+    /* ignore */
+  }
+  const info = {
+    userAgent: navigator.userAgent,
+    screen: `${screen.width}×${screen.height} @${devicePixelRatio}x`,
+    deviceMemoryGB: nav.deviceMemory ?? 'unknown',
+    webgpu: !!nav.gpu,
+    videoEncoder: typeof VideoEncoder !== 'undefined',
+    audioDecoder: typeof AudioDecoder !== 'undefined',
+    offscreenCanvas: typeof OffscreenCanvas !== 'undefined',
+    opfsWritable: typeof (globalThis as unknown as { FileSystemWritableFileStream?: unknown }).FileSystemWritableFileStream !== 'undefined',
+    lastCrash: lastCrash ? JSON.parse(lastCrash) : null,
+  };
+  const text = JSON.stringify(info, null, 2);
+  return (
+    <div class="stack tight">
+      <span class="label">Diagnostics</span>
+      <pre class="tiny" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--bg-2)', padding: 10, borderRadius: 10, margin: 0 }}>{text}</pre>
+      <button
+        class="btn small"
+        style={{ justifySelf: 'start' }}
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(text);
+            setCopied(true);
+          } catch {
+            /* ignore */
+          }
+        }}
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </button>
     </div>
   );
 }

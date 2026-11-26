@@ -9,7 +9,7 @@ import { transcribe } from './transcribe';
 import type { Project, TranscriptWord } from './types';
 import { uid } from './segment';
 import { applyFixes } from './vocab';
-import { clearInflight, markInflight } from './device';
+import { clearInflight, isPhoneOrTablet, markInflight, updateInflight } from './device';
 
 let pcm: { id: string; data: Float32Array } | null = null;
 
@@ -42,9 +42,15 @@ export async function createProject(file: File): Promise<void> {
   editor.set({ project, file: null, url: null, peaks: null, selectedId: null, busy: null, past: [], future: [] });
   setFile(file);
   await saveProject(project);
-  const stored = await saveMedia(project.id, file);
+  // Read the audio first, then keep a copy of the video for next time — never both at once,
+  // and not for very large files on phones (copying them into browser storage can exhaust memory).
+  void prepareAudio().then(() => keepMedia(project.id, file));
+}
+
+async function keepMedia(id: string, file: File) {
+  if (isPhoneOrTablet() && file.size > 150e6) return; // re-selected on reopen instead
+  const stored = await saveMedia(id, file);
   if (!stored) toastStore.show('Storage is full — this project will need the video re-selected next time.');
-  void prepareAudio();
 }
 
 export async function openProject(id: string): Promise<'ok' | 'need-file'> {
@@ -68,8 +74,7 @@ export async function relinkFile(file: File) {
   if (p.media && Math.abs(media.duration - p.media.duration) > 1) toastStore.show('Heads up: this video’s length differs from the original.');
   updateProject((pr) => ({ ...pr, media }));
   setFile(file);
-  void saveMedia(p.id, file);
-  void prepareAudio();
+  void prepareAudio().then(() => keepMedia(p.id, file));
 }
 
 export function closeProject() {
@@ -78,11 +83,27 @@ export function closeProject() {
   editor.set({ project: null, file: null, url: null, peaks: null, selectedId: null, busy: null, past: [], future: [] });
 }
 
-async function getPcm(): Promise<Float32Array> {
+let pcmPending: { id: string; promise: Promise<Float32Array> } | null = null;
+
+/** Decoded audio for the current project. Concurrent callers share one read (never two at once). */
+function getPcm(): Promise<Float32Array> {
+  const s = editor.get();
+  if (!s.project || !s.file) return Promise.reject(new Error('No video loaded'));
+  if (pcm && pcm.id === s.project.id) return Promise.resolve(pcm.data);
+  if (pcmPending && pcmPending.id === s.project.id) return pcmPending.promise;
+  const id = s.project.id;
+  const promise = readPcm().finally(() => {
+    if (pcmPending?.id === id) pcmPending = null;
+  });
+  pcmPending = { id, promise };
+  return promise;
+}
+
+async function readPcm(): Promise<Float32Array> {
   const s = editor.get();
   if (!s.project || !s.file) throw new Error('No video loaded');
-  if (pcm && pcm.id === s.project.id) return pcm.data;
   setBusy({ kind: 'audio', progress: 0, label: 'Reading audio…' });
+  markInflight('audio', { size: s.file.size, name: s.file.type });
   try {
     const { pcm: data, peaks } = await extractAudio(s.file, s.project.media?.duration ?? 0, (p) =>
       setBusy({ kind: 'audio', progress: p, label: `Reading audio · ${Math.round(p * 100)}%` }),
@@ -92,6 +113,7 @@ async function getPcm(): Promise<Float32Array> {
     void savePeaks(s.project.id, peaks);
     return data;
   } finally {
+    clearInflight();
     if (editor.get().busy?.kind === 'audio') setBusy(null);
   }
 }
@@ -140,7 +162,10 @@ export async function runTranscription(language: string) {
       prompt: settings.prompt,
       apiKey: settings.engine === 'groq' ? settings.groqKey : settings.engine === 'openai' ? settings.openaiKey : undefined,
       signal,
-      onProgress: (p) => setBusy({ kind: 'transcribe', progress: p.progress, label: p.label }),
+      onProgress: (p) => {
+        setBusy({ kind: 'transcribe', progress: p.progress, label: p.label });
+        updateInflight({ stage: p.stage, label: p.label });
+      },
       onWords: (w) => {
         raw.push(...w);
         // Show captions as they arrive (throttled).
