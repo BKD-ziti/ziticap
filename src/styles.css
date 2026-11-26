@@ -141,25 +141,33 @@ input[type='color']::-webkit-color-swatch { border: 0; border-radius: 5px; }
 .foot { margin-top: 40px; color: var(--faint); font-size: 12px; text-align: center; line-height: 1.6; }
 
 /* ---------- editor shell ---------- */
-.editor { display: flex; flex-direction: column; height: 100dvh; }
+.editor { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
 .topbar { display: flex; align-items: center; gap: 6px; padding: calc(6px + var(--safe-t)) 8px 6px; border-bottom: 1px solid var(--line-soft); background: var(--bg); flex: none; }
 .topbar .title { flex: 1; min-width: 0; font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; background: transparent; border: 0; outline: none; }
 .topbar .title:focus { background: var(--surface-2); border-radius: 8px; }
-.workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; }
-.stage { display: flex; flex-direction: column; min-height: 0; background: #0b0a09; }
+.workspace { flex: 1; min-height: 0; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr; }
+.stage { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: #0b0a09; }
 .preview-wrap { position: relative; display: flex; align-items: center; justify-content: center; padding: 8px; min-height: 0; }
 .preview { position: relative; max-width: 100%; max-height: 100%; background: #000; border-radius: 8px; overflow: hidden; box-shadow: var(--shadow); touch-action: none; }
 .preview video { display: block; width: 100%; height: 100%; object-fit: fill; }
 .preview canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .preview .drag-hint { position: absolute; left: 50%; transform: translateX(-50%); top: 8px; font-size: 11px; background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 999px; pointer-events: none; opacity: 0; transition: opacity .2s; }
 .preview.dragging .drag-hint { opacity: 1; }
-.transport { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-top: 1px solid var(--line-soft); background: var(--bg); }
+.transport { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-top: 1px solid var(--line-soft); background: var(--bg); min-width: 0; }
+.transport .time { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+@media (max-width: 380px) {
+  .transport .frame-step { display: none; }
+  .transport { gap: 2px; padding: 4px; }
+  .tabs button { font-size: 13px; gap: 4px; }
+  .cue-head { gap: 2px; }
+  .time-in { width: 72px; }
+}
 .transport .time { font-size: 13px; color: var(--muted); padding: 0 6px; }
 .transport .time b { color: var(--text); font-weight: 600; }
 .play-btn { width: 44px; height: 44px; border-radius: 50%; border: 0; background: var(--cream); color: #1a1715; display: grid; place-items: center; }
 .timeline { position: relative; height: 112px; background: var(--bg-2); border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); touch-action: none; user-select: none; -webkit-user-select: none; }
 .timeline canvas { display: block; width: 100%; height: 100%; }
-.panel { min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+.panel { min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
 .tabs { display: flex; gap: 4px; padding: 8px 8px 0; border-bottom: 1px solid var(--line-soft); flex: none; }
 .tabs button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 42px; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); font-weight: 600; font-size: 14px; }
 .tabs button[aria-selected='true'] { color: var(--text); border-color: var(--tomato); }
@@ -167,9 +175,21 @@ input[type='color']::-webkit-color-swatch { border: 0; border-radius: 5px; }
 
 /* Mobile: video gets a fixed share of the screen, panel scrolls beneath. */
 @media (max-width: 959px) {
-  .stage { max-height: 52dvh; }
-  .preview-wrap { height: min(36dvh, 70vw); }
-  .timeline { height: 96px; }
+  .workspace { grid-template-rows: auto minmax(0, 1fr); }
+  /* Fixed share for video + transport + timeline; the preview shrinks to fit, never overlaps the panel. */
+  .stage { height: min(56dvh, calc(78vw + 150px)); overflow: hidden; }
+  .preview-wrap { flex: 1 1 auto; min-height: 0; height: auto; padding: 6px; }
+  .timeline { height: 88px; flex: none; }
+  .transport { flex: none; }
+}
+/* Phones held sideways: video beside the editor so neither gets squashed. */
+@media (max-width: 959px) and (orientation: landscape) and (max-height: 600px) {
+  .workspace { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); grid-template-rows: 1fr; }
+  .stage { height: auto; max-height: none; grid-column: 1; grid-row: 1; }
+  .preview-wrap { height: auto; flex: 1; padding: 4px; }
+  .timeline { height: 76px; }
+  .panel { grid-column: 2; grid-row: 1; border-left: 1px solid var(--line-soft); }
+  .tabs button { min-height: 36px; }
 }
 /* Desktop: side-by-side. */
 @media (min-width: 960px) {
@@ -236,3 +256,18 @@ input[type='color']::-webkit-color-swatch { border: 0; border-radius: 5px; }
 .spec dt { color: var(--muted); }
 .spec dd { margin: 0; font-variant-numeric: tabular-nums; }
 kbd { font-family: inherit; font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--surface-3); border: 1px solid var(--line); }
+
+/* The editor panel adapts to its own width (landscape phones, split-screen iPad/Android). */
+.panel { container-type: inline-size; }
+.cue, .cue-head, .cue-list { min-width: 0; }
+@container (max-width: 420px) {
+  .panel-body { padding-left: 8px; padding-right: 8px; }
+  .cue { padding: 6px 8px 8px; }
+  .cue-idx { width: 18px; }
+  .time-in { width: 70px; font-size: 12px; padding: 4px 2px; }
+  .cue-head .icon-btn.sm { width: 28px; height: 28px; }
+  .cue-meta .btn.small { padding: 0 6px; }
+}
+@container (max-width: 340px) {
+  .cue-head { flex-wrap: wrap; row-gap: 4px; }
+}

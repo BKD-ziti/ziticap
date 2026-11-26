@@ -5,6 +5,8 @@ import { formatBytes, formatTime } from '../lib/media';
 import { toastStore } from '../lib/session';
 import { editor, getVideo, setBusy, useStore } from '../lib/store';
 import { IDownload, IExport, IShare, ICheck } from './icons';
+import { targetSize, type OutputResolution } from '../lib/scale';
+import { clearInflight, markInflight } from '../lib/device';
 
 const isPhone = () => /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
 
@@ -13,6 +15,7 @@ export function ExportPanel() {
   const file = useStore(editor, (s) => s.file);
   const busy = useStore(editor, (s) => s.busy);
   const [quality, setQuality] = useState<ExportQuality>('match');
+  const [resolution, setResolution] = useState<OutputResolution>('original');
   const [progress, setProgress] = useState<{ p: number; eta: number | null } | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
@@ -37,9 +40,11 @@ export function ExportPanel() {
     setResultUrl(null);
     setProgress({ p: 0, eta: null });
     setBusy({ kind: 'export', progress: 0, label: 'Exporting' });
+    markInflight('export', { resolution });
     try {
       const res = await exportVideo(file, m, project.cues, project.style, {
         quality,
+        resolution,
         signal: abort.current.signal,
         onProgress: (p, eta) => setProgress({ p, eta }),
       });
@@ -53,6 +58,7 @@ export function ExportPanel() {
         toastStore.show((e as Error).message || 'Export failed', true);
       }
     } finally {
+      clearInflight();
       setProgress(null);
       setBusy(null);
       abort.current = null;
@@ -97,6 +103,33 @@ export function ExportPanel() {
         <p class="small muted" style={{ margin: 0, lineHeight: 1.5 }}>
           Captions are burned into the picture exactly as previewed, so they show up everywhere — Reels, TikTok, Shorts, LinkedIn, iMessage. Resolution, aspect ratio, frame rate, frame timing and color space match the original; audio is copied untouched.
         </p>
+        {m && (
+          <label class="field">
+            <span>Resolution</span>
+            <div class="seg">
+              {(['original', '1080p', '4k'] as OutputResolution[]).map((r) => {
+                const [w, h] = targetSize(m.width, m.height, r);
+                const label = r === 'original' ? 'Original' : r === '4k' ? '4K' : '1080p';
+                return (
+                  <button aria-pressed={resolution === r} onClick={() => setResolution(r)} title={`${w}×${h}`}>
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <span class="tiny faint" style={{ fontWeight: 400 }}>
+              {(() => {
+                const [w, h] = targetSize(m.width, m.height, resolution);
+                if (resolution === 'original') return `${w}×${h}, exactly as recorded.`;
+                const up = w * h > m.width * m.height;
+                const same = w === m.width && h === m.height;
+                return same
+                  ? `${w}×${h} — your video is already this size.`
+                  : `${w}×${h} (${aspect}), ${up ? 'upscaled' : 'downscaled'} from ${m.width}×${m.height}. Aspect ratio and color space are kept; captions render natively sharp.`;
+              })()}
+            </span>
+          </label>
+        )}
         <label class="field">
             <span>Quality</span>
             <div class="seg">

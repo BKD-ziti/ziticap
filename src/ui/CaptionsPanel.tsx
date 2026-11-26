@@ -25,6 +25,7 @@ import { editor, playRange, playhead, seek, select, setCues, updateCue, updatePr
 import { LANGUAGES, LOCAL_MODELS } from '../lib/transcribe';
 import { loadSettings } from '../lib/db';
 import type { Cue } from '../lib/types';
+import { isPhoneOrTablet } from '../lib/device';
 import { IMerge, IMic, IPlay, IPlus, IScissors, ISearch, ITrash, IWand, IFile, IClock } from './icons';
 
 export function CaptionsPanel({ openSettings }: { openSettings: () => void }) {
@@ -139,6 +140,11 @@ function TranscribeCard({ openSettings }: { openSettings: () => void }) {
             ))}
           </select>
         </label>
+        {settings.engine === 'local' && isPhoneOrTablet() && /small|large/i.test(settings.localModel) && (
+          <span class="pill warn" style={{ whiteSpace: 'normal', lineHeight: 1.4 }}>
+            {model.name} is heavy for phones and may make the page reload. Base is recommended here, or Groq for top accuracy.
+          </span>
+        )}
         <div class="row small">
           <span class="grow muted">{engineLabel}</span>
           <button class="btn small ghost" onClick={openSettings}>

@@ -6,6 +6,8 @@ import type { Project } from '../lib/types';
 import { Wordmark } from './Logo';
 import { IFile, ISettings, ITrash, IUpload } from './icons';
 
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+
 export function Home({ onOpen, openSettings }: { onOpen: (needFile: boolean) => void; openSettings: () => void }) {
   const [recent, setRecent] = useState<Project[]>([]);
   const [over, setOver] = useState(false);
@@ -67,6 +69,11 @@ export function Home({ onOpen, openSettings }: { onOpen: (needFile: boolean) => 
         </span>
         <strong>{loading ? 'Opening…' : 'Choose a video'}</strong>
         <span class="muted small">MP4, MOV or WebM · any size or orientation</span>
+        {isIOS && (
+          <span class="tiny faint" style={{ maxWidth: 360, lineHeight: 1.45 }}>
+            iPhone tip: in the photo picker, tap <b>Options</b> → <b>Current</b> so iOS hands over your original video instead of a compressed copy.
+          </span>
+        )}
         <input
           ref={input}
           type="file"

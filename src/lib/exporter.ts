@@ -33,6 +33,7 @@ import { captionRect, drawCaptions, visibleCue } from './render';
 import { YuvCompositor, compositeSupported } from './composite';
 import { ensureFont } from './fonts';
 import { Yuv420Converter } from './yuv';
+import { YuvScaler, scalerSupported, targetSize, type OutputResolution } from './scale';
 import type { CaptionStyle, Cue, MediaInfo } from './types';
 
 export type ExportQuality = 'match' | 'high' | 'smaller';
@@ -41,6 +42,8 @@ export interface ExportOptions {
   quality: ExportQuality;
   /** Internal: retry through the RGB path. */
   forceRgb?: boolean;
+  /** Output size. 'original' keeps the source size; 1080p/4K resize, always keeping the aspect ratio. */
+  resolution?: OutputResolution;
   onProgress: (p: number, etaSec: number | null) => void;
   signal: AbortSignal;
 }
@@ -58,32 +61,70 @@ export function webCodecsSupported(): boolean {
   return typeof VideoEncoder !== 'undefined' && typeof VideoDecoder !== 'undefined';
 }
 
-async function makeTarget(ext: string): Promise<{ target: Target; streaming: boolean; finish: (name: string, mime: string) => Promise<File> }> {
-  // Disk-backed output (OPFS) keeps memory flat on phones, even for long 4K videos.
+type TargetInfo = { target: Target; streaming: boolean; kind: string; finish: (name: string, mime: string) => Promise<File> };
+
+/**
+ * Where the exported file is written. Disk-backed (OPFS) output keeps memory flat on phones,
+ * even for long 4K videos:
+ *  1. FileSystemWritableFileStream — Chrome/Edge/Android, Firefox, Safari 26+.
+ *  2. A worker with a sync access handle — Safari/iOS 15.2–18.
+ *  3. In memory — last resort.
+ */
+async function makeTarget(ext: string): Promise<TargetInfo> {
+  let root: FileSystemDirectoryHandle | null = null;
+  const name = `ziticap-export-${Date.now()}.${ext}`;
   try {
-    const root = await navigator.storage.getDirectory();
+    root = await navigator.storage.getDirectory();
     // Clear exports from previous sessions.
-    for await (const [name] of (root as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries()) {
-      if (name.startsWith('ziticap-export-')) await root.removeEntry(name).catch(() => {});
+    for await (const [n] of (root as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries()) {
+      if (n.startsWith('ziticap-export-')) await root.removeEntry(n).catch(() => {});
     }
-    const handle = await root.getFileHandle(`ziticap-export-${Date.now()}.${ext}`, { create: true });
-    const writable = await (handle as FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> }).createWritable();
-    return {
-      target: new StreamTarget(writable as unknown as WritableStream, { chunked: true }),
-      streaming: true,
-      finish: async (name, mime) => {
-        const f = await handle.getFile();
-        return new File([f], name, { type: mime });
-      },
-    };
   } catch {
-    const target = new BufferTarget();
-    return {
-      target,
-      streaming: false,
-      finish: async (name, mime) => new File([target.buffer!], name, { type: mime }),
-    };
+    root = null;
   }
+  const fromDisk = (handle: FileSystemFileHandle) => async (fileName: string, mime: string) => {
+    const f = await handle.getFile();
+    return new File([f], fileName, { type: mime });
+  };
+
+  if (root) {
+    try {
+      const handle = await root.getFileHandle(name, { create: true });
+      const createWritable = (handle as FileSystemFileHandle & { createWritable?: () => Promise<FileSystemWritableFileStream> }).createWritable;
+      if (typeof createWritable !== 'function') throw new Error('no createWritable');
+      const writable = await createWritable.call(handle);
+      return { target: new StreamTarget(writable as unknown as WritableStream, { chunked: true }), streaming: true, kind: 'opfs', finish: fromDisk(handle) };
+    } catch {
+      /* try the worker path */
+    }
+    try {
+      const worker = new Worker(new URL('./opfs.worker.ts', import.meta.url), { type: 'module' });
+      const call = (msg: unknown, transfer: Transferable[] = []) =>
+        new Promise<void>((resolve, reject) => {
+          worker.onmessage = (e) => (e.data?.ok ? resolve() : reject(new Error(e.data?.error ?? 'write failed')));
+          worker.onerror = (e) => reject(new Error(e.message));
+          worker.postMessage(msg, transfer);
+        });
+      await call({ type: 'open', name });
+      const writable = new WritableStream<{ type: 'write'; data: Uint8Array; position: number }>({
+        write: (chunk) => {
+          const data = chunk.data.slice(); // own the bytes so they can be transferred
+          return call({ type: 'write', data, position: chunk.position }, [data.buffer]);
+        },
+        close: async () => {
+          await call({ type: 'close' });
+          worker.terminate();
+        },
+        abort: () => worker.terminate(),
+      });
+      const handle = await root.getFileHandle(name);
+      return { target: new StreamTarget(writable, { chunked: true }), streaming: true, kind: 'opfs-worker', finish: fromDisk(handle) };
+    } catch {
+      /* fall back to memory */
+    }
+  }
+  const target = new BufferTarget();
+  return { target, streaming: false, kind: 'memory', finish: async (fileName, mime) => new File([target.buffer!], fileName, { type: mime }) };
 }
 
 function pickContainer(media: MediaInfo): { kind: 'mp4' | 'webm'; ext: string; mime: string } {
@@ -100,6 +141,9 @@ function makeFormat(kind: 'mp4' | 'webm', streaming: boolean): OutputFormat {
 
 /** Estimate a bitrate that matches the source's quality for the chosen codec. */
 function targetBitrate(media: MediaInfo, codec: VideoCodec, q: ExportQuality, W: number, H: number): number | null {
+  // When resizing, scale the source's bitrate with the pixel count (sub-linearly: detail doesn't grow 1:1).
+  const pxRatio = (W * H) / Math.max(1, media.width * media.height);
+  const sizeK = Math.pow(pxRatio, 0.75);
   const fps = media.fps && media.fps > 0 ? Math.min(media.fps, 120) : 30;
   // Rough relative efficiency vs H.264.
   const eff: Record<string, number> = { avc: 1, hevc: 0.6, vp9: 0.65, av1: 0.5, vp8: 1.1 };
@@ -109,7 +153,7 @@ function targetBitrate(media: MediaInfo, codec: VideoCodec, q: ExportQuality, W:
   const floor = W * H * fps * bppFloor * dstEff;
   if (q === 'smaller') return Math.round(floor);
   if (!media.videoBitrate) return Math.round(floor * 1.4);
-  const matched = (media.videoBitrate * dstEff) / srcEff;
+  const matched = ((media.videoBitrate * dstEff) / srcEff) * sizeK;
   // Captions add hard edges that need a few extra bits to stay crisp.
   const want = q === 'high' ? matched * 1.5 : matched * 1.1;
   return Math.round(Math.min(150e6, Math.max(want, floor)));
@@ -131,7 +175,8 @@ export async function exportVideo(file: File, media: MediaInfo, cues: Cue[], sty
 async function exportOnce(file: File, media: MediaInfo, cues: Cue[], style: CaptionStyle, opts: ExportOptions): Promise<ExportResult> {
   if (!webCodecsSupported()) throw new Error('This browser can’t encode video. Use a current Chrome, Edge, Safari (iOS 17+), or Firefox.');
   const cont = pickContainer(media);
-  const { target, streaming, finish } = await makeTarget(cont.ext);
+  const { target, streaming, finish, kind: targetKind } = await makeTarget(cont.ext);
+  console.info(`[ziticap] writing export to ${targetKind}`);
   const output = new Output({ format: makeFormat(cont.kind, streaming), target });
   const input = openInput(file);
   const notes: string[] = [];
@@ -173,16 +218,38 @@ async function exportOnce(file: File, media: MediaInfo, cues: Cue[], style: Capt
     } catch (e) {
       console.warn('[ziticap] frame probe failed', e);
     }
+    // Colour tags to write: the input's own, with any gaps filled the way players fill them
+    // (the decoder's YUV interpretation if it gave one; otherwise BT.709 for HD, BT.601 for SD).
+    const yuvProbe = !!probeFormat && !/^(RGB|BGR)/.test(probeFormat);
+    const sd = Math.min(vTrack.displayWidth, vTrack.displayHeight) < 720;
+    const fallbackCS: VideoColorSpaceInit = sd
+      ? { primaries: 'smpte170m', transfer: 'smpte170m', matrix: 'smpte170m', fullRange: false }
+      : { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false };
+    const pick = <K extends keyof VideoColorSpaceInit>(k: K) =>
+      (trackCS[k] ?? (yuvProbe ? probeCS[k] : undefined) ?? fallbackCS[k] ?? null) as VideoColorSpaceInit[K];
+    const tags: VideoColorSpaceInit = { primaries: pick('primaries'), transfer: pick('transfer'), matrix: pick('matrix'), fullRange: pick('fullRange') ?? false };
+    if (!trackCS.primaries && !trackCS.matrix && !trackCS.transfer) notes.push(`Source had no colour tags; output is labelled with the colour space it decodes as (${tags.matrix}), so it looks identical.`);
+    console.info(`[ziticap] source frames: ${probeFormat ?? 'opaque'} ${probeW}×${probeH}, rotation ${rotation}, colour ${JSON.stringify(trackCS)}`);
 
+    // Output display size (resolution preset, aspect ratio preserved).
+    const [DW, DH] = targetSize(vTrack.displayWidth, vTrack.displayHeight, opts.resolution ?? 'original');
+    const resized = DW !== vTrack.displayWidth || DH !== vTrack.displayHeight;
+    const quarter = rotation === 90 || rotation === 270;
     // Direct path: composite in the source's own YUV planes (exact colour space, rotation kept as metadata).
-    const direct = !opts.forceRgb && compositeSupported(probeFormat) && !flip && par.num === par.den && probeW % 2 === 0 && probeH % 2 === 0;
+    const direct =
+      !opts.forceRgb &&
+      compositeSupported(probeFormat) &&
+      (!resized || scalerSupported(probeFormat)) &&
+      !flip &&
+      par.num === par.den &&
+      probeW % 2 === 0 &&
+      probeH % 2 === 0;
     // Encoded frame size: coded (pre-rotation) size on the direct path, display size on the RGB path.
-    let W = direct ? probeW : vTrack.displayWidth;
-    let H = direct ? probeH : vTrack.displayHeight;
+    let W = direct ? (resized ? (quarter ? DH : DW) : probeW) : DW;
+    let H = direct ? (resized ? (quarter ? DW : DH) : probeH) : DH;
     if (W % 2) W -= 1;
     if (H % 2) H -= 1;
-    const DW = vTrack.displayWidth;
-    const DH = vTrack.displayHeight;
+    if (resized) notes.push(`${DW * DH > vTrack.displayWidth * vTrack.displayHeight ? 'Upscaled' : 'Downscaled'} from ${vTrack.displayWidth}×${vTrack.displayHeight} to ${DW}×${DH} (bicubic); captions are rendered natively at the new size.`);
 
     const supported = output.format.getSupportedVideoCodecs();
     const preferred: VideoCodec[] = [];
@@ -204,7 +271,12 @@ async function exportOnce(file: File, media: MediaInfo, cues: Cue[], style: Capt
       codec = await getFirstEncodableVideoCodec(preferred, { width: W, height: H });
       bitrate = codec ? targetBitrate(media, codec, opts.quality, W, H) : null;
     }
-    if (!codec) throw new Error(`This device can’t encode ${W}×${H} video. Try a desktop browser.`);
+    if (!codec)
+      throw new Error(
+        resized
+          ? `This device can’t encode ${DW}×${DH} video. Choose “Original” resolution, or export on a newer phone or a computer.`
+          : `This device can’t encode ${W}×${H} video. Try a desktop browser.`,
+      );
     if (media.videoCodec && codec !== media.videoCodec) notes.push(`Re-encoded as ${codec.toUpperCase()} (this browser can’t encode ${media.videoCodec.toUpperCase()}).`);
 
     let shift: number | null = null;
@@ -219,11 +291,11 @@ async function exportOnce(file: File, media: MediaInfo, cues: Cue[], style: Capt
       // An untagged file is shown by browsers and phones using the decoder's assumption (BT.709 for HD,
       // BT.601 for SD). Encoders can't write "unspecified" (they'd silently substitute and convert), so we
       // label the output with exactly the colour space the source is decoded and displayed in.
-      const pick = <K extends keyof VideoColorSpaceInit>(k: K) => (trackCS[k] ?? probeCS[k] ?? null) as VideoColorSpaceInit[K];
-      const tags: VideoColorSpaceInit = { primaries: pick('primaries'), transfer: pick('transfer'), matrix: pick('matrix'), fullRange: pick('fullRange') ?? false };
-      if (!trackCS.primaries && !trackCS.matrix && !trackCS.transfer) notes.push(`Source had no colour tags; output is labelled with the colour space it decodes as (${tags.matrix ?? 'default'}), so it looks identical.`);
       const mathCs: VideoColorSpaceInit = { ...probeCS, ...Object.fromEntries(Object.entries(trackCS).filter(([, v]) => v != null)) };
-      const comp = new YuvCompositor(probeFormat!, W, H, rotation, tags, mathCs);
+      const comp = new YuvCompositor(resized ? 'I420' : probeFormat!, W, H, rotation, tags, mathCs);
+      const scaler = resized ? new YuvScaler(probeFormat!, probeW, probeH, W, H) : null;
+      if (scaler && probeFormat && /P1[02]/.test(probeFormat))
+        notes.push(`${media.hdr ? 'HDR' : 'High bit-depth'} colour space kept (${[tags.primaries, tags.transfer].filter(Boolean).join(' / ') || 'as source'}); encoded at 8-bit, the depth this browser can encode.`);
       // Untouched frames can only skip the copy if the file is fully tagged and the decoder reports the same tags.
       // (For untagged files, decoders report defaults but treat frames as "unspecified", which encoders then convert.)
       const fullyTagged = !!(trackCS.primaries && trackCS.transfer && trackCS.matrix && trackCS.fullRange != null);
@@ -263,6 +335,7 @@ async function exportOnce(file: File, media: MediaInfo, cues: Cue[], style: Capt
       opts.signal.addEventListener('abort', onAbort);
       const start = performance.now();
       await output.start();
+      const timing = { scale: 0, composite: 0, encode: 0, frames: 0 };
       const videoTask = (async () => {
         const sink = new VideoSampleSink(vTrack);
         for await (const sample of sink.samples()) {
@@ -270,18 +343,32 @@ async function exportOnce(file: File, media: MediaInfo, cues: Cue[], style: Capt
             if (canceled) throw new DOMException('Canceled', 'AbortError');
             if (sample.timestamp + sample.duration <= trimStart) continue;
             const t = timeOf(sample);
-            let frame = await comp.composite(sample, DW, DH, (ctx) => {
+            const draw = (ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D) => {
               const cue = visibleCue(sorted, t);
               if (!cue) return null;
               drawCaptions(ctx, DW, DH, t, sorted, style);
               return captionRect(ctx, cue, style, DW, DH);
-            });
-            if (!frame && (trimStart !== 0 || !sameTags(sample.colorSpace as VideoColorSpaceInit))) frame = await comp.copyFrame(sample);
+            };
+            let frame: VideoFrame | null;
+            if (scaler) {
+              const t0 = performance.now();
+              const buf = await scaler.scale(sample);
+              const t1 = performance.now();
+              frame = comp.frameFromBuffer(buf, scaler.layout, sample.microsecondTimestamp, sample.microsecondDuration, DW, DH, draw);
+              timing.scale += t1 - t0;
+              timing.composite += performance.now() - t1;
+            } else {
+              frame = await comp.composite(sample, DW, DH, draw);
+              if (!frame && (trimStart !== 0 || !sameTags(sample.colorSpace as VideoColorSpaceInit))) frame = await comp.copyFrame(sample);
+            }
+            const te = performance.now();
             if (frame) {
               const out = new VideoSample(frame);
               await vSource.add(out);
               out.close();
             } else await vSource.add(sample);
+            timing.encode += performance.now() - te;
+            timing.frames++;
             const p = Math.min(0.999, (sample.timestamp - trimStart) / Math.max(0.001, media.duration));
             opts.onProgress(p, p > 0.03 ? ((performance.now() - start) / 1000 / p) * (1 - p) : null);
           } finally {
@@ -300,11 +387,14 @@ async function exportOnce(file: File, media: MediaInfo, cues: Cue[], style: Capt
         opts.signal.removeEventListener('abort', onAbort);
       }
       await output.finalize();
+      const per = (v: number) => (v / Math.max(1, timing.frames)).toFixed(1);
+      console.info(`[ziticap] ${timing.frames} frames · per frame: scale ${per(timing.scale)} ms, captions ${per(timing.composite)} ms, encode wait ${per(timing.encode)} ms`);
       const name = `${baseName}-captioned.${cont.ext}`;
       return { file: await finish(name, cont.mime), codec, width: DW, height: DH, bitrate, notes };
     } else {
       // RGB fallback: draw the frame on a canvas, then convert on the GPU using the source's matrix and range.
       if (W !== DW || H !== DH) notes.push(`Trimmed 1px to ${W}×${H} (encoders require even dimensions).`);
+      // (The canvas draw below also performs any 1080p/4K resize.)
       const tr = trackCS.transfer as string | null | undefined;
       const hdr = media.hdr || tr === 'pq' || tr === 'hlg';
       const canvas: OffscreenCanvas | HTMLCanvasElement =
@@ -312,19 +402,12 @@ async function exportOnce(file: File, media: MediaInfo, cues: Cue[], style: Capt
       const ctx = canvas.getContext('2d', { alpha: false }) as OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
       if (!ctx) throw new Error('Canvas unavailable.');
       ctx.imageSmoothingQuality = 'high';
-      const outCS: VideoColorSpaceInit = hdr
-        ? { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false }
-        : {
-            primaries: trackCS.primaries ?? null,
-            transfer: trackCS.transfer ?? null,
-            matrix: trackCS.matrix ?? null,
-            fullRange: trackCS.fullRange ?? false,
-          };
+      const outCS: VideoColorSpaceInit = hdr ? { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false } : tags;
       if (hdr) notes.push('HDR source on this browser: exported in standard dynamic range (BT.709).');
       let yuv: Yuv420Converter | null = null;
       if (Yuv420Converter.supported(W, H)) {
         try {
-          yuv = new Yuv420Converter(W, H, outCS, probeCS);
+          yuv = new Yuv420Converter(W, H, outCS);
           if (!yuv.selfTest()) yuv = null;
         } catch {
           yuv = null;

@@ -50,6 +50,10 @@ class ColorMath {
   private bits: number;
   private to2020: boolean;
   private transfer: 'sdr' | 'hlg' | 'pq';
+  // 6-bit-per-channel lookup table (262k entries), filled lazily: fast per-pixel conversion.
+  private lut = new Float32Array(1 << 18).fill(-1);
+  private lutU = new Float32Array(1 << 18);
+  private lutV = new Float32Array(1 << 18);
   private cache = new Map<number, [number, number, number]>();
 
   constructor(cs: ColorTags, bits: number, height: number) {
@@ -60,6 +64,22 @@ class ColorMath {
     this.bits = bits;
     this.to2020 = cs.primaries === 'bt2020';
     this.transfer = cs.transfer === 'hlg' ? 'hlg' : cs.transfer === 'pq' ? 'pq' : 'sdr';
+  }
+
+  /** Fast path: quantised lookup. Writes into `out`, returns it. */
+  fast(r: number, g: number, b: number, out: Float32Array): Float32Array {
+    const k = ((r >> 2) << 12) | ((g >> 2) << 6) | (b >> 2);
+    if (this.lut[k] < 0) {
+      const q = (v: number) => ((v >> 2) << 2) | (v >> 6);
+      const [Y, U, V] = this.yuv(q(r), q(g), q(b));
+      this.lut[k] = Y;
+      this.lutU[k] = U;
+      this.lutV[k] = V;
+    }
+    out[0] = this.lut[k];
+    out[1] = this.lutU[k];
+    out[2] = this.lutV[k];
+    return out;
   }
 
   /** Caption colour (sRGB 0–255) → [Y, Cb, Cr] code values in the source's bit depth. */
@@ -219,6 +239,43 @@ export class YuvCompositor {
     return this.to8bit(layout, init);
   }
 
+  /**
+   * Composite into an already-prepared I420 buffer (e.g. a frame the GPU scaler just resized
+   * to 4K). This compositor must have been created with format 'I420' at the buffer's size.
+   */
+  frameFromBuffer(
+    buf: Uint8Array<ArrayBuffer>,
+    layout: PlaneLayout[],
+    timestampUs: number,
+    durationUs: number,
+    W: number,
+    H: number,
+    draw: (ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D) => Rect | null,
+  ): VideoFrame {
+    const c = this.octx;
+    if (this.dirty) {
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      c.clearRect(this.dirty.x, this.dirty.y, this.dirty.w, this.dirty.h);
+      this.dirty = null;
+    }
+    this.setDisplayTransform();
+    const bounds = draw(c);
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    const rect = bounds ? this.toCoded(bounds, W, H) : null;
+    if (rect && rect.w > 0 && rect.h > 0) this.dirty = rect;
+    this.buf = buf;
+    if (this.dirty) this.blend(layout, this.dirty);
+    return new VideoFrame(buf, {
+      format: 'I420',
+      codedWidth: this.cw,
+      codedHeight: this.ch,
+      timestamp: timestampUs + this.timestampOffsetUs,
+      duration: durationUs,
+      layout,
+      colorSpace: this.tags as VideoColorSpaceInit,
+    });
+  }
+
   /** Copy a frame unchanged but labelled with the input's colour tags (and 8-bit if needed). */
   async copyFrame(sample: VideoSample): Promise<VideoFrame> {
     const size = sample.allocationSize();
@@ -247,6 +304,7 @@ export class YuvCompositor {
       else buf[o] = Math.round(v);
     };
     const bps = wide ? 2 : 1;
+    const tmp = new Float32Array(3);
 
     // Luma
     const yl = layout[0];
@@ -256,7 +314,7 @@ export class YuvCompositor {
         const p = (j * r.w + i) * 4;
         const a = img[p + 3];
         if (!a) continue;
-        const [Y] = math.yuv(img[p], img[p + 1], img[p + 2]);
+        const Y = math.fast(img[p], img[p + 1], img[p + 2], tmp)[0];
         const o = row + (r.x + i) * bps;
         const al = a / 255;
         set(o, get(o) * (1 - al) + Y * al);
@@ -279,7 +337,9 @@ export class YuvCompositor {
             const p = (j * r.w + i) * 4;
             const a = img[p + 3];
             if (!a) continue;
-            const [, U, V] = math.yuv(img[p], img[p + 1], img[p + 2]);
+            math.fast(img[p], img[p + 1], img[p + 2], tmp);
+            const U = tmp[1];
+            const V = tmp[2];
             aSum += a;
             uSum += U * a;
             vSum += V * a;
