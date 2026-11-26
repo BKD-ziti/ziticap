@@ -35,10 +35,10 @@ export function Transport() {
         <b>{formatTime(t)}</b> / {formatTime(duration, false)}
       </span>
       <span class="grow" />
-      <button class="btn small ghost mono" title="Previous frame (,)" onClick={() => seek(t - frame)} aria-label="Previous frame">
+      <button class="btn small ghost mono frame-step" title="Previous frame (,)" onClick={() => seek(t - frame)} aria-label="Previous frame">
         −1f
       </button>
-      <button class="btn small ghost mono" title="Next frame (.)" onClick={() => seek(t + frame)} aria-label="Next frame">
+      <button class="btn small ghost mono frame-step" title="Next frame (.)" onClick={() => seek(t + frame)} aria-label="Next frame">
         +1f
       </button>
       <button class="btn small mono" onClick={cycleRate} title="Playback speed" aria-label={`Playback speed ${rate}×`}>

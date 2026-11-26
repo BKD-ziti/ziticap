@@ -12,7 +12,7 @@ Upload a video → get every word transcribed with its own timestamp → fix tex
 | **Edit** | Caption list with editable text and in/out times (↑/↓ nudges 0.1 s, ⇧ 1 s, ⌥ 10 ms). Split at cursor or playhead, merge, add, delete, undo/redo. Per-word timing chips. Find & replace, filler-word removal, case tools, global sync shift, regroup to a new pacing. Reading-speed (CPS) warnings. |
 | **Timeline** | Waveform, drag captions to move them, drag edges to retime, zoom in to drag individual word boundaries. Snaps to the playhead and neighbours. Pinch-zoom on touch, Ctrl/⌘ + wheel on desktop. |
 | **Style** | Six presets (Ziti Pop, Sauce Box, Karaoke, Headline, Broadcast, Clean) plus full control: font, weight, size, case, colour, outline, shadow, background box, word highlight (colour / box / karaoke fill / reveal), position (drag it on the video), width, alignment, animation. |
-| **Export** | Burned-in MP4/WebM at the **source's exact resolution, aspect ratio, frame rate, frame timestamps and color space**. Audio packets are copied bit-for-bit. Also SRT, WebVTT, word-timed VTT, styled ASS, plain transcript, and a project file. |
+| **Export** | Burned-in MP4/WebM at the **source's exact resolution, aspect ratio, frame rate, frame timestamps and color space** — or **1080p / 4K** (aspect ratio kept: 3840×2160, 2160×3840, 2160×2160, 2160×2700 …), resized on the GPU in the video's own color space with a Catmull-Rom bicubic filter and captions rendered natively at the new size. Audio packets are copied bit-for-bit. Also SRT, WebVTT, word-timed VTT, styled ASS, plain transcript, and a project file. |
 | **Word fixes** | Names a speech model can't know are corrected automatically: "Big Ziti", "Big ZD", "BKD Ziti"… → **BKDziti**. Add your own (clients, dishes, places). Their spelling is protected, so ALL-CAPS styles still write **BKDziti**. |
 
 ## How export keeps everything else identical
@@ -31,11 +31,15 @@ Notes: browsers' encoders here are 8-bit, so a 10-bit HDR source keeps its HDR c
 
 Caption pacing follows broadcast/streaming guidance for the "Subtitle standard" preset: at most 42 characters × 2 lines, 5/6 s to 7 s on screen, balanced line breaks, no dangling articles or prepositions, and flicker-free gap closing.
 
-## Use it on your phone
+## Use it anywhere
 
-1. Open the GitHub Pages URL in Safari (iOS 17+) or Chrome (Android).
-2. Share → **Add to Home Screen**. It launches full-screen like an app and works offline once loaded.
-3. After exporting, tap **Save / Share → Save Video** to put it straight into Photos.
+| Device | How |
+|---|---|
+| **iPhone / iPad** | Open the link in Safari (iOS 17+; iOS 26 recommended) → Share → **Add to Home Screen**. When picking a video, tap **Options → Current** so iOS gives you the original file, not a compressed copy. After export, **Save / Share → Save Video** puts it in Photos. |
+| **Android** | Open the link in Chrome → ⋮ → **Install app** (or Add to Home screen). Exports save to Downloads or share straight to apps. |
+| **Mac / PC** | Chrome, Edge, Safari or Firefox. Drag a video onto the page. Keyboard: Space/K play, J/L ±2 s, ←/→ ±1 s, `,`/`.` frame step, `[`/`]` set caption in/out, S split, M merge, ⌘/Ctrl+Z undo. |
+
+The layout adapts to phones (portrait and landscape), tablets, split-screen and desktops.
 
 Projects autosave in the browser (IndexedDB). The first on-device transcription downloads the model once (Base ≈ 80 MB); after that it's cached.
 
@@ -62,7 +66,9 @@ Stack: Vite, Preact, TypeScript, Mediabunny (WebCodecs mux/demux/encode), Transf
 src/lib/render.ts      caption renderer (shared by preview + export)
 src/lib/exporter.ts    WebCodecs burn-in pipeline
 src/lib/composite.ts   caption blending in the source's YUV planes and color space
+src/lib/scale.ts       GPU YUV resize (1080p / 4K), Catmull-Rom
 src/lib/yuv.ts         GPU RGB → YUV converter (compatibility path)
+src/lib/opfs.worker.ts disk-backed export writer for older Safari
 src/lib/vocab.ts       word fixes (BKDziti) and protected spellings
 src/lib/transcribe.ts  on-device + cloud transcription, silence-aware chunking
 src/lib/whisper.worker.ts  Whisper in a Web Worker
@@ -75,7 +81,12 @@ src/ui/*               editor UI
 
 ## Browser support
 
-Chrome/Edge 94+, Safari 17+ (iOS 17+), Firefox 130+. On-device transcription is fastest with WebGPU (Chrome, Edge, Safari 26).
+Chrome/Edge 94+ (desktop and Android), Safari 17+ (iOS/iPadOS 17+, macOS), Firefox 130+. On-device transcription is fastest with WebGPU (Chrome, Edge, Safari 26).
+
+Built-in fallbacks keep exports working across devices:
+- **Export storage:** written straight to disk (OPFS) via `createWritable` (Chrome, Firefox, Safari 26+) or a sync-access-handle worker (Safari/iOS 15.2–18), so long 4K exports don't run out of memory; in memory only as a last resort.
+- **Decoders that hand over RGB frames** (common on phones) use a GPU path that converts back with the source's matrix and range and keeps its color tags.
+- **4K** needs the device's encoder to support it (all recent iPhones, most Android phones from the last few years, any Mac/PC). If it can't, the app says so and Original still works.
 
 ---
 
