@@ -1,5 +1,6 @@
-import { AudioBufferSink } from 'mediabunny';
+import { AudioBufferSink, BufferTarget, Conversion, Mp4OutputFormat, Output, WebMOutputFormat, type Input, type InputAudioTrack } from 'mediabunny';
 import { openInput } from './media';
+import { isPhoneOrTablet } from './device';
 
 export const SAMPLE_RATE = 16000;
 export const PEAKS_PER_SEC = 50;
@@ -111,44 +112,62 @@ function computePeaks(pcm: Float32Array): Float32Array {
   return peaks;
 }
 
-async function viaMediabunny(file: Blob, duration: number, onProgress?: (p: number) => void): Promise<Float32Array> {
-  const input = openInput(file);
-  try {
-    const track = await input.getPrimaryAudioTrack();
-    if (!track) throw new Error('NO_AUDIO');
-    if (!(await track.canDecode())) throw new Error('CANNOT_DECODE');
-    const sink = new AudioBufferSink(track);
-    let rs: Resampler | null = null;
-    for await (const { buffer, timestamp } of sink.buffers()) {
-      if (!rs) rs = new Resampler(buffer.sampleRate, duration);
-      if (timestamp >= 0) rs.seek(timestamp);
-      const ch = buffer.numberOfChannels;
-      let mono: Float32Array;
-      if (ch === 1) mono = buffer.getChannelData(0);
-      else {
-        mono = new Float32Array(buffer.length);
-        for (let c = 0; c < ch; c++) {
-          const d = buffer.getChannelData(c);
-          for (let i = 0; i < d.length; i++) mono[i] += d[i] / ch;
-        }
+/**
+ * Pick the soundtrack to transcribe. Phones can record several: newer iPhones add a "Spatial Audio"
+ * track (APAC) that browsers can't decode next to the normal AAC one. Prefer one we can decode,
+ * in a common codec, stereo or mono.
+ */
+async function rankAudioTracks(input: Input): Promise<{ track: InputAudioTrack; decodable: boolean }[]> {
+  const tracks = await input.getAudioTracks();
+  const common = ['aac', 'opus', 'mp3', 'flac', 'vorbis', 'pcm-s16', 'pcm-s16be', 'pcm-s24', 'pcm-s24be', 'pcm-s32', 'pcm-f32', 'pcm-u8', 'ulaw', 'alaw', 'ac3', 'eac3'];
+  const ranked = await Promise.all(
+    tracks.map(async (track, i) => {
+      const decodable = await track.canDecode().catch(() => false);
+      const codec = track.codec ?? '';
+      let channels = 2;
+      try {
+        channels = track.numberOfChannels;
+      } catch {
+        /* unknown */
       }
-      // Skip the part of a buffer that sits before t=0 (priming samples).
-      if (timestamp < 0) {
-        const skip = Math.min(mono.length, Math.round(-timestamp * buffer.sampleRate));
-        mono = mono.subarray(skip);
-      }
-      rs.write(mono);
-      if (duration > 0) onProgress?.(Math.min(1, (timestamp + buffer.duration) / duration));
-    }
-    if (!rs) throw new Error('NO_AUDIO');
-    return rs.finish();
-  } finally {
-    input.dispose();
-  }
+      const score = (decodable ? 100 : 0) + (common.includes(codec) ? 20 : 0) + (channels <= 2 ? 5 : 0) - i * 0.01;
+      return { track, decodable, score };
+    }),
+  );
+  return ranked.sort((a, b) => b.score - a.score);
 }
 
-async function viaWebAudio(file: Blob, duration: number): Promise<Float32Array> {
-  const data = await file.arrayBuffer();
+/** Stream-decode with WebCodecs: low memory, works on Chrome, Edge, Firefox, Safari 26+. */
+async function viaDecoder(input: Input, track: InputAudioTrack, duration: number, onProgress?: (p: number) => void): Promise<Float32Array> {
+  const sink = new AudioBufferSink(track);
+  let rs: Resampler | null = null;
+  for await (const { buffer, timestamp } of sink.buffers()) {
+    if (!rs) rs = new Resampler(buffer.sampleRate, duration);
+    if (timestamp >= 0) rs.seek(timestamp);
+    const ch = buffer.numberOfChannels;
+    let mono: Float32Array;
+    if (ch === 1) mono = buffer.getChannelData(0);
+    else {
+      mono = new Float32Array(buffer.length);
+      for (let c = 0; c < ch; c++) {
+        const d = buffer.getChannelData(c);
+        for (let i = 0; i < d.length; i++) mono[i] += d[i] / ch;
+      }
+    }
+    // Skip the part of a buffer that sits before t=0 (priming samples).
+    if (timestamp < 0) {
+      const skip = Math.min(mono.length, Math.round(-timestamp * buffer.sampleRate));
+      mono = mono.subarray(skip);
+    }
+    rs.write(mono);
+    if (duration > 0) onProgress?.(Math.min(1, (timestamp + buffer.duration) / duration));
+  }
+  void input;
+  if (!rs) throw new Error('NO_AUDIO');
+  return rs.finish();
+}
+
+async function decodeWithWebAudio(data: ArrayBuffer, duration: number): Promise<Float32Array> {
   const OAC = window.OfflineAudioContext || (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext;
   const ctx = new OAC(1, Math.max(1, Math.ceil((duration || 1) * SAMPLE_RATE)), SAMPLE_RATE);
   const decoded = await ctx.decodeAudioData(data);
@@ -160,16 +179,80 @@ async function viaWebAudio(file: Blob, duration: number): Promise<Float32Array> 
   return out;
 }
 
-/** Decode the soundtrack to 16 kHz mono — what Whisper expects. Streams, so memory stays low. */
-export async function extractAudio(file: Blob, duration: number, onProgress?: (p: number) => void): Promise<ExtractedAudio> {
-  let pcm: Float32Array;
+/**
+ * Low-memory fallback: copy just the soundtrack's packets into a small audio-only file
+ * (~1 MB per minute for AAC) and let the browser's audio decoder read that.
+ * The video itself is never loaded into memory.
+ */
+async function viaAudioOnlyCopy(input: Input, track: InputAudioTrack, duration: number, onProgress?: (p: number) => void): Promise<Float32Array> {
+  const webm = track.codec === 'opus' || track.codec === 'vorbis';
+  const output = new Output({ format: webm ? new WebMOutputFormat() : new Mp4OutputFormat(), target: new BufferTarget() });
+  const conv = await Conversion.init({
+    input,
+    output,
+    showWarnings: false,
+    copy: { mode: 'forced' },
+    video: { discard: true },
+    audio: (t) => (t.id === track.id ? {} : { discard: true }),
+  });
+  if (!conv.isValid || !conv.utilizedTracks.length) throw new Error('CANNOT_COPY');
+  conv.onProgress = (p) => onProgress?.(p * 0.8);
+  await conv.execute();
+  const buf = output.target.buffer;
+  if (!buf) throw new Error('CANNOT_COPY');
+  const pcm = await decodeWithWebAudio(buf, duration);
+  onProgress?.(1);
+  return pcm;
+}
+
+const SAFE_KEY = 'ziticap:safe-audio';
+/** After a crash while reading audio, start with the lighter method next time. */
+export function preferSafeAudio(on: boolean) {
   try {
-    pcm = await viaMediabunny(file, duration, onProgress);
-  } catch (e) {
-    if ((e as Error).message === 'NO_AUDIO') throw new Error('This video has no audio track to transcribe.');
-    pcm = await viaWebAudio(file, duration);
+    if (on) localStorage.setItem(SAFE_KEY, '1');
+    else localStorage.removeItem(SAFE_KEY);
+  } catch {
+    /* ignore */
   }
-  return { pcm, peaks: computePeaks(pcm) };
+}
+
+/** Decode the soundtrack to 16 kHz mono — what Whisper expects — without ever loading the whole video into memory. */
+export async function extractAudio(file: Blob, duration: number, onProgress?: (p: number) => void): Promise<ExtractedAudio> {
+  const input = openInput(file);
+  try {
+    const ranked = await rankAudioTracks(input);
+    if (!ranked.length) throw new Error('This video has no audio track to transcribe.');
+    let safeFirst = false;
+    try {
+      safeFirst = localStorage.getItem(SAFE_KEY) === '1';
+    } catch {
+      /* ignore */
+    }
+    const errors: string[] = [];
+    const attempts: (() => Promise<Float32Array>)[] = [];
+    const best = ranked[0];
+    const decoder = () => viaDecoder(input, best.track, duration, onProgress);
+    const copy = () => viaAudioOnlyCopy(input, best.track, duration, onProgress);
+    if (best.decodable && !safeFirst) attempts.push(decoder, copy);
+    else if (best.decodable) attempts.push(copy, decoder);
+    else attempts.push(copy);
+    // Last resort: hand the whole file to the browser — only when it is small enough to be safe.
+    const limit = isPhoneOrTablet() ? 120e6 : 800e6;
+    if (file.size <= limit) attempts.push(async () => decodeWithWebAudio(await file.arrayBuffer(), duration));
+    for (const attempt of attempts) {
+      try {
+        const pcm = await attempt();
+        console.info(`[ziticap] audio read via ${attempt === decoder ? 'stream decoder' : attempt === copy ? 'audio-only copy' : 'whole-file decode'} · track ${best.track.codec}`);
+        return { pcm, peaks: computePeaks(pcm) };
+      } catch (e) {
+        errors.push((e as Error)?.message ?? String(e));
+      }
+    }
+    console.warn('[ziticap] audio extraction failed:', errors);
+    throw new Error(`This browser can’t read this video’s audio (${best.track.codec ?? 'unknown format'}). Try a current Safari/Chrome, or export the clip as “Most Compatible” and try again.`);
+  } finally {
+    input.dispose();
+  }
 }
 
 /** RMS of a range — used to skip silent chunks (prevents Whisper "hallucinations"). */

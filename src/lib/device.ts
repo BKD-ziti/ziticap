@@ -29,6 +29,21 @@ export function markInflight(kind: string, detail: Record<string, unknown>) {
   }
 }
 
+let lastUpdate = 0;
+/** Record progress on the in-flight step (throttled), so a crash report can say exactly where it died. */
+export function updateInflight(patch: Record<string, unknown>) {
+  const now = Date.now();
+  if (now - lastUpdate < 1000) return;
+  lastUpdate = now;
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return;
+    localStorage.setItem(KEY, JSON.stringify({ ...JSON.parse(raw), ...patch }));
+  } catch {
+    /* ignore */
+  }
+}
+
 export function clearInflight() {
   try {
     localStorage.removeItem(KEY);
@@ -44,7 +59,9 @@ export function takeCrashedInflight(): ({ kind: string; at: number } & Record<st
     localStorage.removeItem(KEY);
     if (!raw) return null;
     const v = JSON.parse(raw);
-    return Date.now() - v.at < 60 * 60 * 1000 ? v : null;
+    if (Date.now() - v.at >= 60 * 60 * 1000) return null;
+    localStorage.setItem('ziticap:lastcrash', raw);
+    return v;
   } catch {
     return null;
   }
