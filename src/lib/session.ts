@@ -9,6 +9,7 @@ import { transcribe } from './transcribe';
 import type { Project, TranscriptWord } from './types';
 import { uid } from './segment';
 import { applyFixes } from './vocab';
+import { clearInflight, markInflight } from './device';
 
 let pcm: { id: string; data: Float32Array } | null = null;
 
@@ -128,6 +129,8 @@ export async function runTranscription(language: string) {
       editor.set({ ...editor.get(), project: { ...pr, cues: segmentWords(words, pr.segment, duration) } });
     };
     setBusy({ kind: 'transcribe', progress: 0, label: 'Starting…' });
+    // If the phone kills the tab mid-way (out of memory), the next launch will know and step down a model.
+    if (settings.engine === 'local') markInflight('asr', { model: settings.localModel });
     await transcribe({
       pcm: data,
       engine: settings.engine,
@@ -165,6 +168,7 @@ export async function runTranscription(language: string) {
       toastStore.show((e as Error).message || 'Transcription failed', true);
     }
   } finally {
+    clearInflight();
     setBusy(null);
     abort = null;
   }

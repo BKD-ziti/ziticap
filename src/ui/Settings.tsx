@@ -2,9 +2,11 @@ import { useState } from 'preact/hooks';
 import { loadSettings, saveSettings, type Settings as S } from '../lib/db';
 import { LANGUAGES, LOCAL_MODELS } from '../lib/transcribe';
 import { newRule, type FixRule } from '../lib/vocab';
+import { isPhoneOrTablet } from '../lib/device';
 import { IClose, ILock, IPlus, ITrash } from './icons';
 
 export function SettingsSheet({ onClose }: { onClose: () => void }) {
+  const phone = isPhoneOrTablet();
   const [s, setS] = useState<S>(loadSettings());
   const set = (patch: Partial<S>) => setS((p) => ({ ...p, ...patch }));
   const save = () => {
@@ -59,12 +61,18 @@ export function SettingsSheet({ onClose }: { onClose: () => void }) {
                 {LOCAL_MODELS.map((m) => (
                   <option value={m.id}>
                     {m.name} · {m.size}
+                    {phone && /small|large/i.test(m.id) ? ' · heavy for phones' : ''}
                   </option>
                 ))}
               </select>
               <span class="tiny faint" style={{ fontWeight: 400 }}>
                 {LOCAL_MODELS.find((m) => m.id === s.localModel)?.note} Downloaded once, then cached for offline use.
               </span>
+              {phone && /small|large/i.test(s.localModel) && (
+                <span class="pill warn" style={{ whiteSpace: 'normal', lineHeight: 1.4 }}>
+                  Phones can run out of memory with this model, which makes the page reload. Base works well on phones — or pick Groq above for the most accurate model, run in the cloud.
+                </span>
+              )}
             </label>
             <label class="field">
               <span>Processor</span>

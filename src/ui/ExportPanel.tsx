@@ -6,6 +6,7 @@ import { toastStore } from '../lib/session';
 import { editor, getVideo, setBusy, useStore } from '../lib/store';
 import { IDownload, IExport, IShare, ICheck } from './icons';
 import { targetSize, type OutputResolution } from '../lib/scale';
+import { clearInflight, markInflight } from '../lib/device';
 
 const isPhone = () => /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
 
@@ -39,6 +40,7 @@ export function ExportPanel() {
     setResultUrl(null);
     setProgress({ p: 0, eta: null });
     setBusy({ kind: 'export', progress: 0, label: 'Exporting' });
+    markInflight('export', { resolution });
     try {
       const res = await exportVideo(file, m, project.cues, project.style, {
         quality,
@@ -56,6 +58,7 @@ export function ExportPanel() {
         toastStore.show((e as Error).message || 'Export failed', true);
       }
     } finally {
+      clearInflight();
       setProgress(null);
       setBusy(null);
       abort.current = null;

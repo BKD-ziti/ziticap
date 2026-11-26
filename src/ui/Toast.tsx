@@ -10,7 +10,7 @@ export function Toast() {
   const t = useStore(toast);
   useEffect(() => {
     if (!t) return;
-    const id = setTimeout(() => toast.set(null), t.err ? 6000 : 3200);
+    const id = setTimeout(() => toast.set(null), t.err ? Math.max(6000, t.msg.length * 70) : 3200);
     return () => clearTimeout(id);
   }, [t?.id]);
   if (!t) return null;

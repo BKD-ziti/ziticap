@@ -1,6 +1,7 @@
 import { SAMPLE_RATE, encodeWav, rms, silenceChunks } from './audio';
 import type { TranscriptWord } from './types';
 import { vocabularyHint } from './vocab';
+import { deviceMemoryGB, isPhoneOrTablet } from './device';
 
 export interface LocalModel {
   id: string;
@@ -13,7 +14,7 @@ export interface LocalModel {
 export const LOCAL_MODELS: LocalModel[] = [
   { id: 'Xenova/whisper-tiny', name: 'Tiny', size: '≈ 40 MB', note: 'Fastest. Good for clear speech on older phones.' },
   { id: 'onnx-community/whisper-base_timestamped', name: 'Base', size: '≈ 80 MB', note: 'Balanced speed and accuracy. Recommended on phones.' },
-  { id: 'Xenova/whisper-small', name: 'Small', size: '≈ 250 MB', note: 'Noticeably more accurate. Best on newer phones and laptops.' },
+  { id: 'Xenova/whisper-small', name: 'Small', size: '≈ 250 MB', note: 'Noticeably more accurate. Best on laptops and desktops; heavy for phones.' },
   {
     id: 'onnx-community/whisper-large-v3-turbo_timestamped',
     name: 'Large v3 Turbo',
@@ -131,7 +132,7 @@ async function transcribeLocal(req: TranscribeRequest): Promise<void> {
   }
   async function loadModel() {
   await workerCall(
-    { type: 'load', model: req.model, device: req.device },
+    { type: 'load', model: req.model, device: req.device, lowMemory: isPhoneOrTablet() || (deviceMemoryGB() ?? 8) <= 4 },
     [],
     (e) => {
       if (e.type === 'progress' && e.file && typeof e.total === 'number' && e.total > 0) {

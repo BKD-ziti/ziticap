@@ -26,19 +26,28 @@ async function hasWebGPU(): Promise<{ ok: boolean; f16: boolean }> {
   }
 }
 
-async function load(model: string, device: 'auto' | 'webgpu' | 'wasm') {
+async function load(model: string, device: 'auto' | 'webgpu' | 'wasm', lowMemory: boolean) {
   const gpu = await hasWebGPU();
-  const dev: 'webgpu' | 'wasm' = device === 'wasm' ? 'wasm' : device === 'webgpu' ? 'webgpu' : gpu.ok ? 'webgpu' : 'wasm';
+  let dev: 'webgpu' | 'wasm' = device === 'wasm' ? 'wasm' : device === 'webgpu' ? 'webgpu' : gpu.ok ? 'webgpu' : 'wasm';
+  const large = /large|turbo/.test(model);
+  const big = large || /small|medium/.test(model);
+  // Weight precision decides download size *and* peak memory. A full 32-bit encoder for Small is ~350 MB,
+  // which is enough to make a phone kill the tab. Use 16-bit on GPUs that support it; on phones without
+  // that, use the compact 8-bit CPU build instead.
+  let dtype: Record<string, string>;
+  if (dev === 'webgpu' && gpu.f16) dtype = { encoder_model: 'fp16', decoder_model_merged: 'q4' };
+  else if (dev === 'webgpu' && !(lowMemory && big)) dtype = { encoder_model: 'fp32', decoder_model_merged: 'q4' };
+  else {
+    dev = 'wasm';
+    dtype = { encoder_model: 'q8', decoder_model_merged: 'q8' };
+  }
+  if (lowMemory && large && !(dev === 'webgpu' && gpu.f16))
+    throw new Error('Large v3 Turbo is too big for this device’s memory. Use Base or Small here, or Groq in Settings for the large model in the cloud.');
   const key = `${model}|${dev}`;
   if (asr && loadedKey === key) {
     post({ type: 'ready', device: activeDevice });
     return;
   }
-  const large = /large|turbo/.test(model);
-  const dtype =
-    dev === 'webgpu'
-      ? { encoder_model: large && gpu.f16 ? 'fp16' : 'fp32', decoder_model_merged: 'q4' }
-      : { encoder_model: 'q8', decoder_model_merged: 'q8' };
   const progress_callback = (p: { status: string; file?: string; loaded?: number; total?: number; progress?: number }) => {
     post({ type: 'progress', ...p });
   };
@@ -46,7 +55,7 @@ async function load(model: string, device: 'auto' | 'webgpu' | 'wasm') {
     asr = (await pipeline('automatic-speech-recognition', model, { device: dev, dtype, progress_callback } as never)) as unknown as ASR;
     activeDevice = dev;
   } catch (e) {
-    if (dev === 'webgpu') {
+    if (dev === 'webgpu' && !(lowMemory && large)) {
       // Some GPUs/drivers fail to compile the graph — fall back to CPU (WASM).
       post({ type: 'notice', message: 'GPU unavailable for this model, using CPU instead.' });
       asr = (await pipeline('automatic-speech-recognition', model, {
@@ -122,7 +131,7 @@ async function run(id: number, audio: Float32Array, language: string, model: str
 self.onmessage = async (ev: MessageEvent) => {
   const m = ev.data;
   try {
-    if (m.type === 'load') await load(m.model, m.device ?? 'auto');
+    if (m.type === 'load') await load(m.model, m.device ?? 'auto', !!m.lowMemory);
     else if (m.type === 'run') await run(m.id, m.audio, m.language, m.model);
   } catch (e) {
     post({ type: 'error', id: m.id, message: (e as Error)?.message ?? String(e) });
