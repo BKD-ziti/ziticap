@@ -1,13 +1,19 @@
 import { useState } from 'preact/hooks';
 import { loadSettings, saveSettings, type Settings as S } from '../lib/db';
 import { LANGUAGES, LOCAL_MODELS } from '../lib/transcribe';
-import { IClose, ILock } from './icons';
+import { newRule, type FixRule } from '../lib/vocab';
+import { IClose, ILock, IPlus, ITrash } from './icons';
 
 export function SettingsSheet({ onClose }: { onClose: () => void }) {
   const [s, setS] = useState<S>(loadSettings());
   const set = (patch: Partial<S>) => setS((p) => ({ ...p, ...patch }));
   const save = () => {
-    saveSettings({ ...s, groqKey: s.groqKey.trim(), openaiKey: s.openaiKey.trim() });
+    saveSettings({
+      ...s,
+      groqKey: s.groqKey.trim(),
+      openaiKey: s.openaiKey.trim(),
+      fixes: s.fixes.filter((r) => r.builtin || (r.from.trim() && r.to.trim())),
+    });
     onClose();
   };
 
@@ -15,7 +21,7 @@ export function SettingsSheet({ onClose }: { onClose: () => void }) {
     <div class="scrim" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div class="sheet stack" role="dialog" aria-modal="true" aria-label="Transcription settings">
         <div class="row">
-          <h2 class="grow">Transcription</h2>
+          <h2 class="grow">Settings</h2>
           <button class="icon-btn" aria-label="Close" onClick={onClose}>
             <IClose />
           </button>
@@ -98,11 +104,50 @@ export function SettingsSheet({ onClose }: { onClose: () => void }) {
               <span>Your key is stored only on this device and sent only to the provider. Only the audio (not the video) is uploaded.</span>
             </div>
             <label class="field">
-              <span>Spelling hints (optional)</span>
-              <textarea class="input" rows={2} placeholder="Names, brands, jargon: BKDziti, ziti al forno, Alexander Zornes…" value={s.prompt} onInput={(e) => set({ prompt: (e.target as HTMLTextAreaElement).value })} />
+              <span>Extra context (optional)</span>
+              <textarea class="input" rows={2} placeholder="Context or jargon, e.g. a cooking demo about baked pasta" value={s.prompt} onInput={(e) => set({ prompt: (e.target as HTMLTextAreaElement).value })} />
             </label>
           </>
         )}
+
+        <div class="stack tight">
+          <div>
+            <span class="label">Word fixes</span>
+            <p class="tiny faint" style={{ margin: '4px 0 0', lineHeight: 1.45 }}>
+              Names the speech model can’t know. Every transcript is corrected automatically, and the spelling is kept exactly — even in ALL-CAPS styles.
+            </p>
+          </div>
+          {s.fixes.map((r, i) => {
+            const upd = (patch: Partial<FixRule>) => set({ fixes: s.fixes.map((x, k) => (k === i ? { ...x, ...patch } : x)) });
+            return (
+              <div class="card stack tight" style={{ padding: 10 }} key={r.id}>
+                <div class="row">
+                  <label class="switch small grow">
+                    <input type="checkbox" checked={r.enabled} onChange={(e) => upd({ enabled: (e.target as HTMLInputElement).checked })} />
+                    <b>{r.to || 'New fix'}</b>
+                  </label>
+                  {!r.builtin && (
+                    <button class="icon-btn sm danger" aria-label="Remove word fix" onClick={() => set({ fixes: s.fixes.filter((_, k) => k !== i) })}>
+                      <ITrash size={15} />
+                    </button>
+                  )}
+                </div>
+                {r.builtin ? (
+                  <span class="tiny muted">Catches “Big Ziti”, “Big ZD”, “Big Z.D.”, “BKD Ziti”, “B.K.D. Ziti”, “Bigziti” and similar → <b>BKDziti</b></span>
+                ) : (
+                  <div class="row">
+                    <input class="input grow" placeholder="Heard as (comma-separated)" value={r.from} onInput={(e) => upd({ from: (e.target as HTMLInputElement).value })} aria-label="Heard as" />
+                    <span class="faint">→</span>
+                    <input class="input grow" placeholder="Write as" value={r.to} onInput={(e) => upd({ to: (e.target as HTMLInputElement).value })} aria-label="Write as" />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <button class="btn small" style={{ justifySelf: 'start' }} onClick={() => set({ fixes: [...s.fixes, newRule()] })}>
+            <IPlus size={16} /> Add a word fix
+          </button>
+        </div>
 
         <label class="field">
           <span>Default language</span>

@@ -95,7 +95,7 @@ export function ExportPanel() {
       <div class="stack tight">
         <span class="label">Video with captions</span>
         <p class="small muted" style={{ margin: 0, lineHeight: 1.5 }}>
-          Captions are burned into the picture exactly as previewed, so they show up everywhere — Reels, TikTok, Shorts, LinkedIn, iMessage. Resolution, aspect ratio, frame rate and frame timing match the original; audio is copied untouched.
+          Captions are burned into the picture exactly as previewed, so they show up everywhere — Reels, TikTok, Shorts, LinkedIn, iMessage. Resolution, aspect ratio, frame rate, frame timing and color space match the original; audio is copied untouched.
         </p>
         <label class="field">
             <span>Quality</span>

@@ -1,5 +1,5 @@
 /**
- * GPU RGB → YUV 4:2:0 (BT.709, limited/"TV" range) converter.
+ * GPU RGB → YUV 4:2:0 converter for the compatibility export path, using the source's matrix and range.
  *
  * Why: if you hand a browser's video encoder an RGB canvas, many platforms tag the
  * result as full-range sRGB — non-standard for video, and it makes Instagram/TikTok
@@ -23,13 +23,15 @@ uniform float P; // bytes per chroma plane: (W/2)*(H/2)
 out vec4 o;
 
 vec3 at(vec2 px) { return texelFetch(src, ivec2(clamp(px, vec2(0.0), size - 1.0)), 0).rgb; }
-float Y(vec3 c) { return (16.0 + 219.0 * dot(c, vec3(0.2126, 0.7152, 0.0722))) / 255.0; }
+uniform vec3 kY, kU, kV; // matrix rows for the target colour space
+uniform vec4 rng;        // yOff, yScale, cOff, cScale (limited or full range)
+float Y(vec3 c) { return (rng.x + rng.y * dot(c, kY)) / 255.0; }
 vec3 avg(float cx, float cy) {
   vec2 b = vec2(cx * 2.0, cy * 2.0);
   return (at(b) + at(b + vec2(1.0, 0.0)) + at(b + vec2(0.0, 1.0)) + at(b + vec2(1.0, 1.0))) * 0.25;
 }
-float U(vec3 c) { return (128.0 + 224.0 * dot(c, vec3(-0.114572, -0.385428, 0.5))) / 255.0; }
-float V(vec3 c) { return (128.0 + 224.0 * dot(c, vec3(0.5, -0.454153, -0.045847))) / 255.0; }
+float U(vec3 c) { return (rng.z + rng.w * dot(c, kU)) / 255.0; }
+float V(vec3 c) { return (rng.z + rng.w * dot(c, kV)) / 255.0; }
 
 void main() {
   float tx = floor(gl_FragCoord.x);
@@ -61,7 +63,16 @@ export class Yuv420Converter {
     return W % 8 === 0 && H % 2 === 0 && typeof VideoFrame !== 'undefined';
   }
 
-  constructor(W: number, H: number) {
+  private cs: VideoColorSpaceInit;
+  private yLo: number;
+  private yHi: number;
+
+  /**
+   * @param cs     tags to write (the source's colour space)
+   * @param decode how the browser decoded the source, used to fill unknown matrix/range
+   */
+  constructor(W: number, H: number, cs: VideoColorSpaceInit = { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false }, decode: VideoColorSpaceInit = {}) {
+    this.cs = cs;
     this.W = W;
     this.H = H;
     const rows = H + H / 2;
@@ -106,6 +117,17 @@ export class Yuv420Converter {
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
 
+    const m: string = cs.matrix ?? decode.matrix ?? (Math.min(W, H) < 720 ? 'smpte170m' : 'bt709');
+    const [kr, kb] = m === 'bt2020-ncl' ? [0.2627, 0.0593] : m === 'bt470bg' || m === 'smpte170m' ? [0.299, 0.114] : [0.2126, 0.0722];
+    const kg = 1 - kr - kb;
+    const full = cs.fullRange ?? decode.fullRange ?? false;
+    const rng = full ? [0, 255, 128, 255] : [16, 219, 128, 224];
+    this.yLo = rng[0];
+    this.yHi = rng[0] + rng[1];
+    gl.uniform3f(gl.getUniformLocation(prog, 'kY'), kr, kg, kb);
+    gl.uniform3f(gl.getUniformLocation(prog, 'kU'), -kr / (2 * (1 - kb)), -kg / (2 * (1 - kb)), 0.5);
+    gl.uniform3f(gl.getUniformLocation(prog, 'kV'), 0.5, -kg / (2 * (1 - kr)), -kb / (2 * (1 - kr)));
+    gl.uniform4f(gl.getUniformLocation(prog, 'rng'), rng[0], rng[1], rng[2], rng[3]);
     gl.uniform1i(gl.getUniformLocation(prog, 'src'), 0);
     gl.uniform2f(gl.getUniformLocation(prog, 'size'), W, H);
     gl.uniform1f(gl.getUniformLocation(prog, 'H'), H);
@@ -132,7 +154,7 @@ export class Yuv420Converter {
         { offset: W * H, stride: W / 2 },
         { offset: W * H + (W / 2) * (H / 2), stride: W / 2 },
       ],
-      colorSpace: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false },
+      colorSpace: this.cs,
     });
   }
 
@@ -150,7 +172,7 @@ export class Yuv420Converter {
       const y0 = this.buf[0];
       const y1 = this.buf[this.W - 1];
       const u = this.buf[this.W * this.H];
-      return Math.abs(y0 - 16) <= 1 && Math.abs(y1 - 235) <= 1 && Math.abs(u - 128) <= 1;
+      return Math.abs(y0 - this.yLo) <= 1 && Math.abs(y1 - this.yHi) <= 1 && Math.abs(u - 128) <= 1;
     } catch (e) {
       console.warn('[ziticap] YUV path unavailable:', e);
       return false;

@@ -8,6 +8,7 @@ import { editor, setBusy, setCues, updateProject } from './store';
 import { transcribe } from './transcribe';
 import type { Project, TranscriptWord } from './types';
 import { uid } from './segment';
+import { applyFixes } from './vocab';
 
 let pcm: { id: string; data: Float32Array } | null = null;
 
@@ -123,7 +124,7 @@ export async function runTranscription(language: string) {
     const flush = () => {
       const pr = editor.get().project;
       if (!pr) return;
-      const words = normalizeWords(raw, duration);
+      const words = applyFixes(normalizeWords(raw, duration));
       editor.set({ ...editor.get(), project: { ...pr, cues: segmentWords(words, pr.segment, duration) } });
     };
     setBusy({ kind: 'transcribe', progress: 0, label: 'Starting…' });
@@ -147,7 +148,8 @@ export async function runTranscription(language: string) {
       },
     });
     const pr = editor.get().project!;
-    const words = normalizeWords(raw, duration);
+    // Fix names the model can't know (e.g. "Big Ziti" → "BKDziti") before captions are formed.
+    const words = applyFixes(normalizeWords(raw, duration));
     const cues = finalizeTiming(segmentWords(words, pr.segment, duration), pr.segment, duration);
     // Reset to the pre-transcription state so a single undo restores it, then apply.
     editor.set({ ...editor.get(), project: { ...pr, cues: s.project.cues } });

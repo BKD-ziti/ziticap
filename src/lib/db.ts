@@ -1,5 +1,6 @@
 // Tiny IndexedDB wrapper: projects autosave locally, nothing leaves the device.
 import type { Project } from './types';
+import { DEFAULT_RULES, setRules, type FixRule } from './vocab';
 
 const DB = 'ziticap';
 const VERSION = 1;
@@ -68,6 +69,8 @@ export interface Settings {
   openaiKey: string;
   language: string;
   prompt: string;
+  /** Auto-corrections applied to every transcript (names, brands). */
+  fixes: FixRule[];
 }
 
 const DEFAULTS: Settings = {
@@ -78,16 +81,24 @@ const DEFAULTS: Settings = {
   openaiKey: '',
   language: 'auto',
   prompt: '',
+  fixes: DEFAULT_RULES,
 };
 
 export function loadSettings(): Settings {
+  let s: Settings;
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('ziticap:settings') || '{}') };
+    s = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('ziticap:settings') || '{}') };
   } catch {
-    return { ...DEFAULTS };
+    s = { ...DEFAULTS };
   }
+  // The BKDziti rule always exists (it can be switched off, not deleted).
+  if (!Array.isArray(s.fixes)) s.fixes = DEFAULT_RULES;
+  if (!s.fixes.some((r) => r.builtin)) s.fixes = [...DEFAULT_RULES, ...s.fixes];
+  setRules(s.fixes);
+  return s;
 }
 export function saveSettings(s: Settings) {
+  setRules(s.fixes);
   try {
     localStorage.setItem('ziticap:settings', JSON.stringify(s));
   } catch {

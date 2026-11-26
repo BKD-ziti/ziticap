@@ -12,19 +12,22 @@ Upload a video → get every word transcribed with its own timestamp → fix tex
 | **Edit** | Caption list with editable text and in/out times (↑/↓ nudges 0.1 s, ⇧ 1 s, ⌥ 10 ms). Split at cursor or playhead, merge, add, delete, undo/redo. Per-word timing chips. Find & replace, filler-word removal, case tools, global sync shift, regroup to a new pacing. Reading-speed (CPS) warnings. |
 | **Timeline** | Waveform, drag captions to move them, drag edges to retime, zoom in to drag individual word boundaries. Snaps to the playhead and neighbours. Pinch-zoom on touch, Ctrl/⌘ + wheel on desktop. |
 | **Style** | Six presets (Ziti Pop, Sauce Box, Karaoke, Headline, Broadcast, Clean) plus full control: font, weight, size, case, colour, outline, shadow, background box, word highlight (colour / box / karaoke fill / reveal), position (drag it on the video), width, alignment, animation. |
-| **Export** | Burned-in MP4/WebM at the **source's exact resolution, aspect ratio, frame rate and frame timestamps**. Audio packets are copied bit-for-bit. Also SRT, WebVTT, word-timed VTT, styled ASS, plain transcript, and a project file. |
+| **Export** | Burned-in MP4/WebM at the **source's exact resolution, aspect ratio, frame rate, frame timestamps and color space**. Audio packets are copied bit-for-bit. Also SRT, WebVTT, word-timed VTT, styled ASS, plain transcript, and a project file. |
+| **Word fixes** | Names a speech model can't know are corrected automatically: "Big Ziti", "Big ZD", "BKD Ziti"… → **BKDziti**. Add your own (clients, dishes, places). Their spelling is protected, so ALL-CAPS styles still write **BKDziti**. |
 
 ## How export keeps everything else identical
 
 Built on WebCodecs (via [Mediabunny](https://mediabunny.dev)), with no ffmpeg.wasm involved:
 
-1. Demux the source and decode each frame with the hardware decoder.
-2. Draw the frame at its **display** resolution (rotation metadata is baked in, so iPhone portrait clips stay upright) and render captions with the *same* renderer the preview uses, laid out in video-pixel units, so the preview is the export.
-3. Convert to **BT.709 limited-range 4:2:0 on the GPU** and tag it as such. That's what cameras and NLEs deliver, so Instagram/TikTok/YouTube re-encodes look right. (Encoding a canvas directly tags output as full-range sRGB, which is non-standard.)
-4. Re-encode with the source codec when the device supports it (otherwise H.264), at a bitrate matched to the source and adjusted for codec efficiency.
+1. Decode each frame with the hardware decoder and keep it in its native YUV form (I420, NV12, 4:2:2, 4:4:4, 10/12-bit).
+2. Render captions with the *same* renderer the preview uses (laid out in video-pixel units, so the preview is the export) onto a transparent overlay, mapped into the file's stored orientation.
+3. Convert the caption colors into the **source's own color space** (matrix, full/limited range, BT.709/BT.601/BT.2020 primaries, SDR/HLG/PQ transfer, with graphics white at the BT.2408 reference level for HDR) and alpha-blend them into the Y/U/V planes. Pixels outside the captions are never converted, and frames without captions go to the encoder untouched.
+4. Encode with the source codec when the device supports it (otherwise H.264), at a bitrate matched to the source, and tag the output with the input's color space. Rotation stays as metadata, just like the original.
 5. Copy every audio packet untouched, keep metadata tags, and write a fast-start MP4 (index first) to on-disk browser storage (OPFS), so long 4K files don't exhaust phone memory.
 
-Verified on test files: 1080p30, 1080×1920 at 29.97 fps, rotated portrait, and VP9/Opus WebM. Output resolution, frame count, frame rate and duration all match, the audio stream is byte-identical, colour tags match, and luma PSNR is about 49 dB outside the caption area.
+Verified on test files (Rec.709 1080p30, untagged 1080×1920 29.97 fps, Rec.601 full-range, 10-bit HDR HLG BT.2020, rotated portrait, VP9/Opus WebM). Resolution, rotation, frame count, frame rate, duration and color tags match, audio is byte-identical, and luma PSNR is 50–56 dB away from the captions.
+
+Notes: browsers' encoders here are 8-bit, so a 10-bit HDR source keeps its HDR color space (BT.2020 + HLG/PQ) at 8-bit depth. Untagged sources are labelled with the color space they decode as (BT.709 for HD), because encoders can't write "unspecified", so they look identical.
 
 Caption pacing follows broadcast/streaming guidance for the "Subtitle standard" preset: at most 42 characters × 2 lines, 5/6 s to 7 s on screen, balanced line breaks, no dangling articles or prepositions, and flicker-free gap closing.
 
@@ -58,7 +61,9 @@ Stack: Vite, Preact, TypeScript, Mediabunny (WebCodecs mux/demux/encode), Transf
 ```
 src/lib/render.ts      caption renderer (shared by preview + export)
 src/lib/exporter.ts    WebCodecs burn-in pipeline
-src/lib/yuv.ts         GPU RGB → BT.709 I420 converter
+src/lib/composite.ts   caption blending in the source's YUV planes and color space
+src/lib/yuv.ts         GPU RGB → YUV converter (compatibility path)
+src/lib/vocab.ts       word fixes (BKDziti) and protected spellings
 src/lib/transcribe.ts  on-device + cloud transcription, silence-aware chunking
 src/lib/whisper.worker.ts  Whisper in a Web Worker
 src/lib/audio.ts       streaming 16 kHz decode, waveform peaks, WAV encode
@@ -70,7 +75,7 @@ src/ui/*               editor UI
 
 ## Browser support
 
-Chrome/Edge 94+, Safari 17+ (iOS 17+), Firefox 130+. On-device transcription is fastest with WebGPU (Chrome, Edge, Safari 26). HDR sources export as SDR.
+Chrome/Edge 94+, Safari 17+ (iOS 17+), Firefox 130+. On-device transcription is fastest with WebGPU (Chrome, Edge, Safari 26).
 
 ---
 

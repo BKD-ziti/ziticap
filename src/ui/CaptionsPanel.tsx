@@ -2,6 +2,7 @@ import { memo } from 'preact/compat';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   changeCase,
+  fixVocabulary,
   countMatches,
   makeCueAt,
   mergeCues,
@@ -113,7 +114,7 @@ function TranscribeCard({ openSettings }: { openSettings: () => void }) {
       const text = await f.text();
       const cues = parseSubtitles(text);
       if (!cues.length) throw new Error('No captions found in that file.');
-      setCues(cues);
+      setCues(fixVocabulary(cues));
       toastStore.show(`Imported ${cues.length} captions.`);
     } catch (e) {
       toastStore.show((e as Error).message, true);
@@ -428,7 +429,7 @@ function FindReplace() {
           Replace all
         </button>
       </div>
-      <span class="tiny faint">Great for names and brand words the transcript misheard (e.g. “big ziti” → “BKDziti”).</span>
+      <span class="tiny faint">For one-off fixes. Names you use often belong in Settings → Word fixes, so every transcript gets them right.</span>
     </div>
   );
 }
@@ -490,6 +491,9 @@ function TidyTools() {
         <span class="tiny faint">{segmentPreset(project.segmentPreset).note} Regrouping keeps every word and its timing.</span>
       </label>
       <div class="row wrap">
+        <button class="btn small" onClick={() => apply(fixVocabulary, 'Word fixes applied (e.g. BKDziti).')}>
+          Apply word fixes
+        </button>
         <button class="btn small" onClick={() => apply(removeFillers, 'Removed filler words.')}>
           Remove “um / uh”
         </button>

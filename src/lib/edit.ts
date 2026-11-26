@@ -1,5 +1,6 @@
 import type { Cue, SegmentOptions, Word } from './types';
 import { segmentWords, uid } from './segment';
+import { applyFixes, restoreCase } from './vocab';
 
 const MIN = 0.05;
 
@@ -255,9 +256,17 @@ export function changeCase(cues: Cue[], mode: 'upper' | 'lower' | 'sentence'): C
         if (i === 0 || (prev && /[.!?]["')\]]*$/.test(prev.text))) text = text.charAt(0).toUpperCase() + text.slice(1);
         text = text.replace(/\bi\b/g, 'I').replace(/\bi'/g, "I'");
       }
-      return { ...w, text };
+      return { ...w, text: restoreCase(text) };
     });
     return { ...c, words };
+  });
+}
+
+/** Re-run the custom-vocabulary auto-corrections over existing captions. */
+export function fixVocabulary(cues: Cue[]): Cue[] {
+  return cues.map((c) => {
+    const words = applyFixes(c.words);
+    return words === c.words ? c : { ...c, words };
   });
 }
 

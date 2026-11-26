@@ -4,6 +4,7 @@
  * is exactly what gets burned into the file, at any resolution or orientation.
  */
 import type { CaptionStyle, Cue, Word } from './types';
+import { protectedTerms, upper } from './vocab';
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
@@ -47,7 +48,7 @@ const layoutCache = new Map<string, Layout>();
 let cacheKeyStyle = '';
 
 function styleKey(style: CaptionStyle, W: number, H: number) {
-  return [style.fontFamily, style.fontWeight, style.italic, style.fontSize, style.uppercase, style.maxWidth, style.lineHeight, style.letterSpacing, style.positionY, style.align, style.boxPadding, W, H].join('|');
+  return [protectedTerms().join(','), style.fontFamily, style.fontWeight, style.italic, style.fontSize, style.uppercase, style.maxWidth, style.lineHeight, style.letterSpacing, style.positionY, style.align, style.boxPadding, W, H].join('|');
 }
 
 function wrap(items: LWord[], space: number, maxW: number): LWord[][] {
@@ -88,7 +89,7 @@ export function layoutCue(ctx: Ctx, cue: Cue, style: CaptionStyle, W: number, H:
   setSpacing(ctx, style, px);
   const space = ctx.measureText(' ').width + style.letterSpacing * px;
   const items: LWord[] = cue.words.map((word) => {
-    const text = style.uppercase ? word.text.toUpperCase() : word.text;
+    const text = style.uppercase ? upper(word.text) : word.text;
     return { word, text, x: 0, w: ctx.measureText(text).width };
   });
   const maxW = Math.max(px * 2, style.maxWidth * W);
@@ -383,4 +384,22 @@ export function cueBounds(ctx: Ctx, cue: Cue, style: CaptionStyle, W: number, H:
   const L = layoutCue(ctx, cue, style, W, H);
   const pad = (style.boxEnabled ? style.boxPadding : 0.15) * L.px;
   return { x: (W - L.blockW) / 2 - pad, y: L.top - pad, w: L.blockW + pad * 2, h: L.blockH + pad * 2 };
+}
+
+/**
+ * Generous display-space bounds of everything drawCue paints for this cue (glyphs, outline,
+ * shadow, boxes, pop/rise animation), used to limit work when compositing into video planes.
+ */
+export function captionRect(ctx: Ctx, cue: Cue, style: CaptionStyle, W: number, H: number) {
+  const L = layoutCue(ctx, cue, style, W, H);
+  const px = L.px;
+  const extra = px * (0.5 + style.strokeWidth * 2 + style.shadowBlur * 2 + style.shadowOffset + (style.boxEnabled ? style.boxPadding * 1.2 : 0));
+  const grow = 0.12; // animation scale headroom
+  const left = Math.min(L.regionLeft, (W - L.blockW) / 2) - L.blockW * grow - extra;
+  const right = Math.max(L.regionRight, (W + L.blockW) / 2) + L.blockW * grow + extra;
+  const top = L.top - L.blockH * grow - extra - px * 0.4;
+  const bottom = L.top + L.blockH * (1 + grow) + extra + px * 0.4;
+  const x = Math.max(0, Math.floor(left));
+  const y = Math.max(0, Math.floor(top));
+  return { x, y, w: Math.min(W, Math.ceil(right)) - x, h: Math.min(H, Math.ceil(bottom)) - y };
 }

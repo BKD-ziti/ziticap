@@ -91,7 +91,7 @@ export function Home({ onOpen, openSettings }: { onOpen: (needFile: boolean) => 
         </div>
         <div class="fact">
           <b>Nothing else changes</b>
-          <span>Same resolution, aspect ratio and frame timing. Audio is carried over untouched.</span>
+          <span>Same resolution, aspect ratio, frame timing and color space (HDR included). Audio is carried over untouched.</span>
         </div>
       </div>
 

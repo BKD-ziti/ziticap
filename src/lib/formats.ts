@@ -1,5 +1,6 @@
 import type { CaptionStyle, Cue, Word } from './types';
 import { cueText, uid, wrapForFile } from './segment';
+import { upper } from './vocab';
 
 function ts(t: number, sep: ',' | '.'): string {
   t = Math.max(0, t);
@@ -17,7 +18,7 @@ export interface FileOptions {
   uppercase?: boolean;
 }
 
-const tx = (s: string, o: FileOptions) => (o.uppercase ? s.toUpperCase() : s);
+const tx = (s: string, o: FileOptions) => (o.uppercase ? upper(s) : s);
 
 export function toSRT(cues: Cue[], o: FileOptions): string {
   return cues
@@ -117,7 +118,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     .filter((c) => c.words.length)
     .map((c) => {
       const words = c.words.map((w: Word, i) => {
-        const text = (style.uppercase ? w.text.toUpperCase() : w.text).replace(/[{}]/g, '');
+        const text = (style.uppercase ? upper(w.text) : w.text).replace(/[{}]/g, '');
         const k = karaoke ? `{\\k${Math.max(1, Math.round(((c.words[i + 1]?.start ?? c.end) - (i === 0 ? c.start : w.start)) * 100))}}` : '';
         return k + text + (i < c.words.length - 1 ? (w.br ? '\\N' : ' ') : '');
       });

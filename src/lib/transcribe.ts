@@ -1,5 +1,6 @@
 import { SAMPLE_RATE, encodeWav, rms, silenceChunks } from './audio';
 import type { TranscriptWord } from './types';
+import { vocabularyHint } from './vocab';
 
 export interface LocalModel {
   id: string;
@@ -232,7 +233,9 @@ async function transcribeCloud(req: TranscribeRequest): Promise<void> {
     form.append('timestamp_granularities[]', 'word');
     form.append('timestamp_granularities[]', 'segment');
     if (req.language && req.language !== 'auto') form.append('language', req.language);
-    if (req.prompt.trim()) form.append('prompt', req.prompt.trim().slice(0, 800));
+    // Spelling hints: the user's notes plus every auto-correct target (e.g. "BKDziti").
+    const hint = [vocabularyHint(), req.prompt.trim()].filter(Boolean).join('. ');
+    if (hint) form.append('prompt', hint.slice(0, 800));
 
     let res: Response | null = null;
     for (let attempt = 0; attempt < 4; attempt++) {

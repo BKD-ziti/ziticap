@@ -3,6 +3,10 @@ import '@fontsource/inter/400.css';
 import './lib/fonts';
 import './styles.css';
 import { App } from './app';
+import { loadSettings } from './lib/db';
+
+// Load custom vocabulary (e.g. BKDziti) before anything renders captions.
+loadSettings();
 
 render(<App />, document.getElementById('app')!);
 
