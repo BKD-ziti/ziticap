@@ -26,9 +26,11 @@ async function hasWebGPU(): Promise<{ ok: boolean; f16: boolean }> {
   }
 }
 
-async function load(model: string, device: 'auto' | 'webgpu' | 'wasm', lowMemory: boolean) {
+async function load(model: string, device: 'auto' | 'webgpu' | 'wasm', lowMemory: boolean, preferCpu: boolean) {
   const gpu = await hasWebGPU();
-  let dev: 'webgpu' | 'wasm' = device === 'wasm' ? 'wasm' : device === 'webgpu' ? 'webgpu' : gpu.ok ? 'webgpu' : 'wasm';
+  // "Auto" uses the GPU where it's reliable. On iPhone/iPad, Safari's WebGPU can crash the whole tab
+  // while setting up a speech model, so Auto means CPU there (slower, but stable).
+  let dev: 'webgpu' | 'wasm' = device === 'wasm' ? 'wasm' : device === 'webgpu' ? 'webgpu' : gpu.ok && !preferCpu ? 'webgpu' : 'wasm';
   const large = /large|turbo/.test(model);
   const big = large || /small|medium/.test(model);
   // Weight precision decides download size *and* peak memory. A full 32-bit encoder for Small is ~350 MB,
@@ -48,6 +50,8 @@ async function load(model: string, device: 'auto' | 'webgpu' | 'wasm', lowMemory
     post({ type: 'ready', device: activeDevice });
     return;
   }
+  // Tell the page which processor is about to be used, so a crash report can name it.
+  post({ type: 'device', device: dev, dtype });
   const progress_callback = (p: { status: string; file?: string; loaded?: number; total?: number; progress?: number }) => {
     post({ type: 'progress', ...p });
   };
@@ -131,7 +135,7 @@ async function run(id: number, audio: Float32Array, language: string, model: str
 self.onmessage = async (ev: MessageEvent) => {
   const m = ev.data;
   try {
-    if (m.type === 'load') await load(m.model, m.device ?? 'auto', !!m.lowMemory);
+    if (m.type === 'load') await load(m.model, m.device ?? 'auto', !!m.lowMemory, !!m.preferCpu);
     else if (m.type === 'run') await run(m.id, m.audio, m.language, m.model);
   } catch (e) {
     post({ type: 'error', id: m.id, message: (e as Error)?.message ?? String(e) });

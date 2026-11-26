@@ -1,7 +1,7 @@
 import { SAMPLE_RATE, encodeWav, rms, silenceChunks } from './audio';
 import type { TranscriptWord } from './types';
 import { vocabularyHint } from './vocab';
-import { deviceMemoryGB, isPhoneOrTablet } from './device';
+import { deviceMemoryGB, isIOS, isPhoneOrTablet, updateInflight } from './device';
 
 export interface LocalModel {
   id: string;
@@ -132,7 +132,7 @@ async function transcribeLocal(req: TranscribeRequest): Promise<void> {
   }
   async function loadModel() {
   await workerCall(
-    { type: 'load', model: req.model, device: req.device, lowMemory: isPhoneOrTablet() || (deviceMemoryGB() ?? 8) <= 4 },
+    { type: 'load', model: req.model, device: req.device, lowMemory: isPhoneOrTablet() || (deviceMemoryGB() ?? 8) <= 4, preferCpu: isIOS() },
     [],
     (e) => {
       if (e.type === 'progress' && e.file && typeof e.total === 'number' && e.total > 0) {
@@ -147,6 +147,7 @@ async function transcribeLocal(req: TranscribeRequest): Promise<void> {
       }
       if (e.type === 'progress' && e.status === 'ready') req.onProgress({ stage: 'model', progress: 1, label: 'Warming up…' });
       if (e.type === 'notice') console.info(e.message);
+      if (e.type === 'device') updateInflight({ device: e.device, dtype: e.dtype }, true);
     },
     (e) => (e.type === 'ready' ? ((device = String(e.device)), true) : undefined),
     req.signal,

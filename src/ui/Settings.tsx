@@ -2,7 +2,7 @@ import { useState } from 'preact/hooks';
 import { loadSettings, saveSettings, type Settings as S } from '../lib/db';
 import { LANGUAGES, LOCAL_MODELS } from '../lib/transcribe';
 import { newRule, type FixRule } from '../lib/vocab';
-import { isPhoneOrTablet } from '../lib/device';
+import { isIOS, isPhoneOrTablet } from '../lib/device';
 import { IClose, ILock, IPlus, ITrash } from './icons';
 
 export function SettingsSheet({ onClose }: { onClose: () => void }) {
@@ -83,6 +83,11 @@ export function SettingsSheet({ onClose }: { onClose: () => void }) {
                   </button>
                 ))}
               </div>
+              {isIOS() && (
+                <span class="tiny faint" style={{ fontWeight: 400 }}>
+                  On iPhone and iPad, Auto uses the CPU: Safari’s GPU mode can crash while loading speech models.
+                </span>
+              )}
             </label>
           </div>
         )}
