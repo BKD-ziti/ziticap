@@ -1,0 +1,39 @@
+{
+  "name": "ziticap",
+  "version": "1.0.0",
+  "description": "ZitiCap by BKDziti — transcribe, edit and burn captions into video, right in the browser.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BKD-ziti/ziticap.git"
+  },
+  "license": "GPL-3.0-only",
+  "bugs": {
+    "url": "https://github.com/BKD-ziti/ziticap/issues"
+  },
+  "homepage": "https://github.com/BKD-ziti/ziticap#readme",
+  "dependencies": {
+    "@fontsource/anton": "^5.3.0",
+    "@fontsource/archivo-black": "^5.3.0",
+    "@fontsource/bebas-neue": "^5.3.0",
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/montserrat": "^5.3.0",
+    "@fontsource/oswald": "^5.3.0",
+    "@fontsource/poppins": "^5.3.0",
+    "@huggingface/transformers": "^4.3.2",
+    "mediabunny": "^1.66.4",
+    "preact": "^11.2.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.4.0"
+  },
+  "private": true,
+  "type": "module"
+}
