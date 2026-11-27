@@ -155,6 +155,8 @@ async function transcribeLocal(req: TranscribeRequest): Promise<void> {
   }
 
   const chunks = silenceChunks(req.pcm, 28, 5);
+  const skipped: { start: number; end: number }[] = [];
+  let found = 0;
   const total = req.pcm.length;
   const t0 = performance.now();
   for (let i = 0; i < chunks.length; i++) {
@@ -169,7 +171,24 @@ async function transcribeLocal(req: TranscribeRequest): Promise<void> {
       label: `Transcribing on this device (${device === 'webgpu' ? 'GPU' : 'CPU'}) · ${Math.round(done * 100)}%${Number.isFinite(eta) ? ` · ~${Math.ceil(eta)}s left` : ''}`,
     });
     // Skip near-silent chunks; Whisper tends to invent text ("Thank you.") on silence.
-    if (rms(req.pcm, c.start, c.end) < 0.004) continue;
+    if (rms(req.pcm, c.start, c.end) < 0.004) {
+      skipped.push(c);
+      continue;
+    }
+    await runChunk(c);
+  }
+  // Heard nothing at all? Listen again to everything that was skipped as "silence" (never to pure digital silence).
+  if (!found && skipped.length) {
+    const retry = skipped.filter((c) => rms(req.pcm, c.start, c.end) > 1e-4);
+    for (let i = 0; i < retry.length; i++) {
+      if (req.signal.aborted) throw new DOMException('Canceled', 'AbortError');
+      req.onProgress({ stage: 'transcribe', progress: i / retry.length, label: `Listening more closely · ${Math.round((i / retry.length) * 100)}%` });
+      await runChunk(retry[i]);
+    }
+  }
+  req.onProgress({ stage: 'done', progress: 1, label: 'Done' });
+
+  async function runChunk(c: { start: number; end: number }) {
     const audio = req.pcm.slice(c.start, c.end);
     const id = ++seq;
     const res = await workerCall<{ words: TranscriptWord[] }>(
@@ -181,6 +200,7 @@ async function transcribeLocal(req: TranscribeRequest): Promise<void> {
     );
     const offset = c.start / SAMPLE_RATE;
     const chunkEnd = c.end / SAMPLE_RATE;
+    found += res.words.length;
     req.onWords(
       res.words.map((w) => ({
         text: w.text,
@@ -189,7 +209,6 @@ async function transcribeLocal(req: TranscribeRequest): Promise<void> {
       })),
     );
   }
-  req.onProgress({ stage: 'done', progress: 1, label: 'Done' });
 }
 
 const PROVIDERS = {
@@ -223,10 +242,27 @@ async function transcribeCloud(req: TranscribeRequest): Promise<void> {
   // 16-bit mono WAV = 32 KB/s → ~12 minutes per request under the 25 MB limit.
   const maxSec = Math.floor(p.maxBytes / (SAMPLE_RATE * 2)) - 10;
   const chunks = silenceChunks(req.pcm, maxSec, 10);
+  const skipped: { start: number; end: number }[] = [];
+  let found = 0;
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i];
     req.onProgress({ stage: 'transcribe', progress: i / chunks.length, label: `Transcribing with ${req.engine === 'groq' ? 'Groq' : 'OpenAI'} · part ${i + 1} of ${chunks.length}` });
-    if (rms(req.pcm, c.start, c.end) < 0.002) continue;
+    if (rms(req.pcm, c.start, c.end) < 0.002) {
+      skipped.push(c);
+      continue;
+    }
+    await sendChunk(c);
+  }
+  if (!found && skipped.length) {
+    const retry = skipped.filter((c) => rms(req.pcm, c.start, c.end) > 1e-4);
+    for (let i = 0; i < retry.length; i++) {
+      req.onProgress({ stage: 'transcribe', progress: i / retry.length, label: `Listening more closely · part ${i + 1} of ${retry.length}` });
+      await sendChunk(retry[i]);
+    }
+  }
+  req.onProgress({ stage: 'done', progress: 1, label: 'Done' });
+
+  async function sendChunk(c: { start: number; end: number }) {
     const wav = encodeWav(req.pcm.subarray(c.start, c.end));
     const form = new FormData();
     form.append('file', wav, 'audio.wav');
@@ -278,9 +314,9 @@ async function transcribeCloud(req: TranscribeRequest): Promise<void> {
         return parts.map((t, k) => ({ text: t, start: s.start + k * step, end: s.start + (k + 1) * step }));
       });
     }
+    found += words.length;
     req.onWords(words.map((w) => ({ text: w.text, start: w.start + offset, end: w.end + offset })));
   }
-  req.onProgress({ stage: 'done', progress: 1, label: 'Done' });
 }
 
 export async function transcribe(req: TranscribeRequest): Promise<void> {

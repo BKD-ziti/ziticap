@@ -193,8 +193,10 @@ function Diagnostics() {
     );
   const nav = navigator as Navigator & { gpu?: unknown; deviceMemory?: number };
   let lastCrash = '';
+  let lastAudio = '';
   try {
     lastCrash = localStorage.getItem('ziticap:lastcrash') ?? '';
+    lastAudio = localStorage.getItem('ziticap:lastaudio') ?? '';
   } catch {
     /* ignore */
   }
@@ -208,6 +210,7 @@ function Diagnostics() {
     offscreenCanvas: typeof OffscreenCanvas !== 'undefined',
     opfsWritable: typeof (globalThis as unknown as { FileSystemWritableFileStream?: unknown }).FileSystemWritableFileStream !== 'undefined',
     lastCrash: lastCrash ? JSON.parse(lastCrash) : null,
+    lastAudio: lastAudio ? JSON.parse(lastAudio) : null,
   };
   const text = JSON.stringify(info, null, 2);
   return (
