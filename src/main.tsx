@@ -19,6 +19,10 @@ const crashed = takeCrashedInflight();
 if (crashed?.kind === 'audio') {
   preferSafeAudio(true);
   notice = 'Your device ran out of memory while reading this video’s audio. ZitiCap will now use its low-memory method — open the project and try again.';
+} else if (crashed?.kind === 'asr' && crashed.device === 'webgpu' && settings.device !== 'wasm') {
+  // The GPU path crashed: switch to CPU mode first (keep the model), rather than shrinking the model.
+  saveSettings({ ...settings, device: 'wasm' });
+  notice = 'The GPU speech mode crashed on this device, so ZitiCap switched to CPU mode — slower, but stable. For the fastest results on a phone, use Groq in Settings.';
 } else if (crashed?.kind === 'asr' && crashed.stage === 'transcribe') {
   notice = 'Your device ran out of memory while transcribing. Close other apps and try again, or use Groq in Settings (it needs almost no phone memory).';
 } else if (crashed?.kind === 'asr') {

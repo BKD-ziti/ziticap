@@ -31,14 +31,17 @@ export function markInflight(kind: string, detail: Record<string, unknown>) {
 
 let lastUpdate = 0;
 /** Record progress on the in-flight step (throttled), so a crash report can say exactly where it died. */
-export function updateInflight(patch: Record<string, unknown>) {
+export function updateInflight(patch: Record<string, unknown>, force = false) {
   const now = Date.now();
-  if (now - lastUpdate < 1000) return;
-  lastUpdate = now;
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return;
-    localStorage.setItem(KEY, JSON.stringify({ ...JSON.parse(raw), ...patch }));
+    const cur = JSON.parse(raw);
+    // Stage changes are always written immediately; progress ticks at most once a second.
+    const stageChanged = 'stage' in patch && patch.stage !== cur.stage;
+    if (!force && !stageChanged && now - lastUpdate < 1000) return;
+    lastUpdate = now;
+    localStorage.setItem(KEY, JSON.stringify({ ...cur, ...patch }));
   } catch {
     /* ignore */
   }
