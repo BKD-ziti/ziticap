@@ -1,5 +1,5 @@
 // Project lifecycle: create from a file, reopen, transcribe. Glue between libs and UI.
-import { extractAudio } from './audio';
+import { extractAudio, type AudioReport } from './audio';
 import { loadMedia, loadPeaks, loadProject, loadSettings, saveMedia, savePeaks, saveProject } from './db';
 import { probe } from './media';
 import { DEFAULT_STYLE_PRESET, segmentPreset, stylePreset } from './presets';
@@ -12,6 +12,7 @@ import { applyFixes } from './vocab';
 import { clearInflight, isPhoneOrTablet, markInflight, updateInflight } from './device';
 
 let pcm: { id: string; data: Float32Array } | null = null;
+let audioReport: AudioReport | null = null;
 
 export const toastStore = { show: (_msg: string, _err?: boolean) => {} };
 
@@ -105,10 +106,11 @@ async function readPcm(): Promise<Float32Array> {
   setBusy({ kind: 'audio', progress: 0, label: 'Reading audio…' });
   markInflight('audio', { size: s.file.size, name: s.file.type });
   try {
-    const { pcm: data, peaks } = await extractAudio(s.file, s.project.media?.duration ?? 0, (p) =>
+    const { pcm: data, peaks, report } = await extractAudio(s.file, s.project.media?.duration ?? 0, (p) =>
       setBusy({ kind: 'audio', progress: p, label: `Reading audio · ${Math.round(p * 100)}%` }),
     );
     pcm = { id: s.project.id, data };
+    audioReport = report;
     editor.set({ ...editor.get(), peaks });
     void savePeaks(s.project.id, peaks);
     return data;
@@ -182,7 +184,8 @@ export async function runTranscription(language: string) {
     // Reset to the pre-transcription state so a single undo restores it, then apply.
     editor.set({ ...editor.get(), project: { ...pr, cues: s.project.cues } });
     setCues(cues);
-    toastStore.show(cues.length ? `Transcribed ${words.length} words into ${cues.length} captions.` : 'No speech found in this video.');
+    if (cues.length) toastStore.show(`Transcribed ${words.length} words into ${cues.length} captions.`);
+    else toastStore.show(noSpeechMessage(), true);
   } catch (e) {
     const pr = editor.get().project;
     if ((e as Error).name === 'AbortError') {
@@ -197,4 +200,13 @@ export async function runTranscription(language: string) {
     setBusy(null);
     abort = null;
   }
+}
+
+/** Explain an empty transcript using what we learned while reading the audio. */
+function noSpeechMessage(): string {
+  const r = audioReport;
+  if (!r) return 'No speech found in this video.';
+  const of = r.tracks.length > 1 ? ` (soundtrack ${r.usedTrack} of ${r.tracks.length})` : '';
+  if (r.silent) return `This video’s soundtrack is silent${of}, so there’s nothing to transcribe.`;
+  return `No speech found${of}. If someone is speaking, set the spoken language instead of Auto-detect, or try Groq in Settings. Settings → Diagnostics shows the audio details.`;
 }
